@@ -119,7 +119,7 @@ export default function RegistrarPagoScreen() {
   // Modal de tasa diaria cuando la moneda del pago difiere de la del préstamo
   const [pagoPendienteTasa, setPagoPendienteTasa] =
     useState<PagoPendienteConversion | null>(null);
-  const [tasaDiariaInput, setTasaDiariaInput] = useState("3100");
+  const [tasaDiariaInput, setTasaDiariaInput] = useState("00");
   const [errorTasa, setErrorTasa] = useState("");
   const [guardandoTasa, setGuardandoTasa] = useState(false);
 

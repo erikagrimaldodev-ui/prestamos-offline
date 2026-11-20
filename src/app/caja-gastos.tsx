@@ -472,9 +472,7 @@ export default function CajaBancosScreen() {
         onPress={() => abrirModal("efectivo_entregado")}
       >
         <View style={styles.tarjetaHeader}>
-          <Text style={styles.tarjetaTitulo}>
-            Dinero Entregado en Efectivo (al Jefe)
-          </Text>
+          <Text style={styles.tarjetaTitulo}>Dinero Entregado (al Jefe)</Text>
           <Text style={styles.tarjetaAccionNegativa}>- Registrar entrega</Text>
         </View>
         <Text style={styles.montoLinea}>
