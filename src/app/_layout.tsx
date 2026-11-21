@@ -1,10 +1,9 @@
-import { useEffect } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import {
   View,
   Text,
   TouchableOpacity,
   StyleSheet,
-  BackHandler,
   Platform,
 } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
@@ -16,6 +15,7 @@ import {
 } from "@react-navigation/drawer";
 import { DrawerActions } from "@react-navigation/native";
 import { Ionicons } from "@expo/vector-icons";
+import * as LocalAuthentication from "expo-local-authentication";
 import { initDatabase } from "../../database/db";
 
 interface MenuItemConfig {
@@ -41,24 +41,55 @@ const MENU_ITEMS: MenuItemConfig[] = [
   { label: "Caja y Gastos", route: "/caja-gastos", icon: "wallet" },
 ];
 
-function CustomDrawerContent(props: DrawerContentComponentProps) {
+interface CustomDrawerContentProps extends DrawerContentComponentProps {
+  onBloquearSesion: () => void;
+}
+
+function CustomDrawerContent(props: CustomDrawerContentProps) {
   const router = useRouter();
   const pathname = usePathname();
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (timerRef.current) {
+        clearTimeout(timerRef.current);
+      }
+    };
+  }, []);
+
+  const cerrarMenuSeguro = () => {
+    try {
+      const state = props.navigation.getState?.();
+      const isDrawerOpen =
+        state?.type === "drawer" &&
+        state?.history?.some(
+          (item: { type?: string; status?: string }) =>
+            item.type === "drawer" && item.status === "open",
+        );
+      if (isDrawerOpen) {
+        props.navigation.dispatch(DrawerActions.closeDrawer());
+      } else if (typeof props.navigation.closeDrawer === "function") {
+        props.navigation.closeDrawer();
+      }
+    } catch {
+      // Evita que un despacho tardío rompa el flujo si el drawer ya cerró
+    }
+  };
 
   const navegarA = (route: string) => {
-    props.navigation.dispatch(DrawerActions.closeDrawer());
+    cerrarMenuSeguro();
     router.push(route as never);
   };
 
-  const handleSalirApp = () => {
-    props.navigation.dispatch(DrawerActions.closeDrawer());
-    if (Platform.OS === "android") {
-      BackHandler.exitApp();
-    } else if (Platform.OS === "web" && typeof window !== "undefined") {
-      window.close();
-    } else {
-      BackHandler.exitApp();
+  const handleCerrarSesion = () => {
+    cerrarMenuSeguro();
+    if (timerRef.current) {
+      clearTimeout(timerRef.current);
     }
+    timerRef.current = setTimeout(() => {
+      props.onBloquearSesion();
+    }, 80);
   };
 
   return (
@@ -125,7 +156,7 @@ function CustomDrawerContent(props: DrawerContentComponentProps) {
 
         <TouchableOpacity
           style={drawerStyles.logoutBtn}
-          onPress={handleSalirApp}
+          onPress={handleCerrarSesion}
         >
           <Ionicons name="log-out-outline" size={19} color="#FFFFFF" />
           <Text style={drawerStyles.logoutBtnText}>Cerrar sesión</Text>
@@ -136,56 +167,214 @@ function CustomDrawerContent(props: DrawerContentComponentProps) {
 }
 
 export default function RootLayout() {
+  const [desbloqueado, setDesbloqueado] = useState(Platform.OS === "web");
+  const [verificandoAcceso, setVerificandoAcceso] = useState(false);
+  const [avisoAcceso, setAvisoAcceso] = useState("");
+
   useEffect(() => {
     initDatabase().catch((err) => console.error("Error iniciando BD:", err));
   }, []);
 
+  const solicitarDesbloqueo = useCallback(async () => {
+    if (Platform.OS === "web") {
+      setDesbloqueado(true);
+      return;
+    }
+
+    setAvisoAcceso("");
+    setVerificandoAcceso(true);
+
+    try {
+      const nivelSeguridad = await LocalAuthentication.getEnrolledLevelAsync();
+
+      if (nivelSeguridad === LocalAuthentication.SecurityLevel.NONE) {
+        setDesbloqueado(true);
+        return;
+      }
+
+      const resultado = await LocalAuthentication.authenticateAsync({
+        promptMessage: "Desbloquea con tu huella, patrón, PIN o contraseña",
+        cancelLabel: "Cancelar",
+        fallbackLabel: "Usar patrón / PIN / contraseña",
+        disableDeviceFallback: false,
+      });
+
+      if (resultado.success) {
+        setDesbloqueado(true);
+      } else if (resultado.error === "not_enrolled") {
+        setDesbloqueado(true);
+      } else if (resultado.error === "user_cancel") {
+        setAvisoAcceso(
+          "Acceso cancelado. Toca el botón para verificar tu seguridad.",
+        );
+      } else {
+        setAvisoAcceso("No se pudo verificar el acceso. Intenta nuevamente.");
+      }
+    } catch {
+      setAvisoAcceso(
+        "No se pudo abrir la verificación de seguridad. Toca reintentar.",
+      );
+    } finally {
+      setVerificandoAcceso(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!desbloqueado) {
+      void solicitarDesbloqueo();
+    }
+  }, [desbloqueado, solicitarDesbloqueo]);
+
+  const bloquearSesion = useCallback(() => {
+    setAvisoAcceso("");
+    setDesbloqueado(false);
+  }, []);
+
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
-      <Drawer
-        initialRouteName="index"
-        drawerContent={(props) => <CustomDrawerContent {...props} />}
-        screenOptions={{
-          headerStyle: { backgroundColor: "#0F172A" },
-          headerTintColor: "#FFFFFF",
-          headerTitleStyle: { fontWeight: "700", fontSize: 16 },
-        }}
+      <View
+        style={{ flex: 1, display: desbloqueado ? "flex" : "none" }}
+        pointerEvents={desbloqueado ? "auto" : "none"}
       >
-        <Drawer.Screen name="index" options={{ title: "Registrar Pago" }} />
-        <Drawer.Screen
-          name="registrar-pago"
-          options={{ title: "Registrar Pago" }}
-        />
-        <Drawer.Screen
-          name="prestar"
-          options={{
-            title: "Realizar Préstamos | Lista de clientes (A-Z)",
+        <Drawer
+          initialRouteName="index"
+          drawerContent={(props) => (
+            <CustomDrawerContent {...props} onBloquearSesion={bloquearSesion} />
+          )}
+          screenOptions={{
+            headerStyle: { backgroundColor: "#0F172A" },
+            headerTintColor: "#FFFFFF",
+            headerTitleStyle: { fontWeight: "700", fontSize: 16 },
           }}
-        />
-        <Drawer.Screen
-          name="renovar-prestamos"
-          options={{ title: "Renovar prestamo" }}
-        />
-        <Drawer.Screen
-          name="registrar-cliente"
-          options={{ title: "Registro de Clientes" }}
-        />
-        <Drawer.Screen
-          name="historial"
-          options={{ title: "Lista de Préstamos y Pagos" }}
-        />
-        <Drawer.Screen
-          name="caja-gastos"
-          options={{ title: "Caja y Gastos Diarios" }}
-        />
-        <Drawer.Screen
-          name="base-datos"
-          options={{ title: "Administración de Base de Datos" }}
-        />
-      </Drawer>
+        >
+          <Drawer.Screen name="index" options={{ title: "Registrar Pago" }} />
+          <Drawer.Screen
+            name="registrar-pago"
+            options={{ title: "Registrar Pago" }}
+          />
+          <Drawer.Screen
+            name="prestar"
+            options={{
+              title: "Realizar Préstamos | Lista de clientes (A-Z)",
+            }}
+          />
+          <Drawer.Screen
+            name="renovar-prestamos"
+            options={{ title: "Renovar prestamo" }}
+          />
+          <Drawer.Screen
+            name="registrar-cliente"
+            options={{ title: "Registro de Clientes" }}
+          />
+          <Drawer.Screen
+            name="historial"
+            options={{ title: "Lista de Préstamos y Pagos" }}
+          />
+          <Drawer.Screen
+            name="caja-gastos"
+            options={{ title: "Caja y Gastos Diarios" }}
+          />
+          <Drawer.Screen
+            name="base-datos"
+            options={{ title: "Administración de Base de Datos" }}
+          />
+        </Drawer>
+      </View>
+
+      {!desbloqueado ? (
+        <View style={lockStyles.container}>
+          <View style={lockStyles.card}>
+            <View style={lockStyles.iconCircle}>
+              <Ionicons name="lock-closed" size={28} color="#FFFFFF" />
+            </View>
+            <Text style={lockStyles.titulo}>Desbloquear Sistema</Text>
+            <Text style={lockStyles.subtitulo}>
+              Usa tu huella, patrón, PIN o contraseña del teléfono para abrir la
+              aplicación.
+            </Text>
+
+            <TouchableOpacity
+              style={lockStyles.btn}
+              onPress={() => void solicitarDesbloqueo()}
+              disabled={verificandoAcceso}
+            >
+              <Text style={lockStyles.btnTexto}>
+                {verificandoAcceso ? "Verificando..." : "Desbloquear ahora"}
+              </Text>
+            </TouchableOpacity>
+
+            {avisoAcceso ? (
+              <Text style={lockStyles.aviso}>{avisoAcceso}</Text>
+            ) : null}
+          </View>
+        </View>
+      ) : null}
     </GestureHandlerRootView>
   );
 }
+
+const lockStyles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: "#F8FAFC",
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 20,
+  },
+  card: {
+    width: "100%",
+    maxWidth: 380,
+    backgroundColor: "#FFFFFF",
+    borderRadius: 14,
+    padding: 24,
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+    elevation: 2,
+  },
+  iconCircle: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: "#0F172A",
+    justifyContent: "center",
+    alignItems: "center",
+    marginBottom: 14,
+  },
+  titulo: {
+    fontSize: 20,
+    fontWeight: "700",
+    color: "#0F172A",
+    marginBottom: 6,
+  },
+  subtitulo: {
+    fontSize: 13,
+    color: "#475569",
+    textAlign: "center",
+    lineHeight: 19,
+    marginBottom: 18,
+  },
+  btn: {
+    width: "100%",
+    backgroundColor: "#0F172A",
+    paddingVertical: 13,
+    paddingHorizontal: 18,
+    borderRadius: 10,
+    alignItems: "center",
+  },
+  btnTexto: {
+    color: "#FFFFFF",
+    fontSize: 15,
+    fontWeight: "700",
+  },
+  aviso: {
+    marginTop: 12,
+    color: "#DC2626",
+    fontSize: 12,
+    fontWeight: "600",
+    textAlign: "center",
+  },
+});
 
 const drawerStyles = StyleSheet.create({
   container: {

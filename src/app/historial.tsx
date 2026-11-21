@@ -12,12 +12,19 @@ import { useFocusEffect } from "expo-router";
 import { getAllRows, getFirstRow, runQuery } from "../../database/db";
 
 type MonedaRegistro = "COP" | "USD";
+type FiltroFrecuencia =
+  | "todos"
+  | "diario"
+  | "semanal"
+  | "quincenal"
+  | "mensual";
 
 interface PrestamoHistorial {
   id: number;
   cliente_id: number;
   cliente_nombre: string;
   monto_prestado: number;
+  interes_porcentaje?: number | null;
   monto_total: number;
   saldo_pendiente: number;
   cantidad_cuotas: number;
@@ -37,8 +44,12 @@ interface PagoHistorial {
   fecha_pago: string;
   moneda?: string | null;
   monto_prestado?: number | null;
+  interes_porcentaje?: number | null;
+  monto_total?: number | null;
   fecha_prestamo?: string | null;
   saldo_pendiente?: number | null;
+  frecuencia?: string | null;
+  ultima_fecha_pago?: string | null;
 }
 
 type ObjetivoEliminar =
@@ -48,6 +59,55 @@ type ObjetivoEliminar =
 
 const normalizarMoneda = (moneda?: string | null): MonedaRegistro => {
   return (moneda || "").trim().toUpperCase() === "USD" ? "USD" : "COP";
+};
+
+const normalizarFrecuencia = (frecuencia?: string | null): string => {
+  const f = (frecuencia || "").trim().toLowerCase();
+  if (f.startsWith("diar")) return "diario";
+  if (f.startsWith("sem")) return "semanal";
+  if (f.startsWith("quin")) return "quincenal";
+  if (f.startsWith("men")) return "mensual";
+  return f || "diario";
+};
+
+const diasPorFrecuencia = (frecuencia?: string | null): number => {
+  const f = normalizarFrecuencia(frecuencia);
+  if (f === "semanal") return 7;
+  if (f === "quincenal") return 15;
+  if (f === "mensual") return 30;
+  return 1;
+};
+
+const sumarDiasAFecha = (fechaStr?: string | null, dias = 1): string => {
+  if (!fechaStr) return "N/A";
+  const limpia = fechaStr.trim().slice(0, 10);
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(limpia);
+  if (!match) return limpia || "N/A";
+
+  const year = Number(match[1]);
+  const month = Number(match[2]) - 1;
+  const day = Number(match[3]);
+  const fecha = new Date(Date.UTC(year, month, day));
+  if (Number.isNaN(fecha.getTime())) return limpia || "N/A";
+
+  fecha.setUTCDate(fecha.getUTCDate() + Math.max(1, dias));
+  const y = fecha.getUTCFullYear();
+  const m = String(fecha.getUTCMonth() + 1).padStart(2, "0");
+  const d = String(fecha.getUTCDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+};
+
+const obtenerFechaProximoPago = (pago: PagoHistorial): string => {
+  const saldo = Number(pago.saldo_pendiente ?? 0);
+  if (saldo <= 0) return "Saldado";
+
+  const pasoDias = diasPorFrecuencia(pago.frecuencia);
+  const baseFecha =
+    (pago.ultima_fecha_pago || pago.fecha_pago || pago.fecha_prestamo || "")
+      .trim()
+      .slice(0, 10) || null;
+
+  return sumarDiasAFecha(baseFecha, pasoDias);
 };
 
 const formatearMilesEntero = (valor: number | null | undefined): string => {
@@ -81,6 +141,8 @@ export default function HistorialScreen() {
   const [filtroEstado, setFiltroEstado] = useState<
     "todos" | "activo" | "pagado" | "renovado"
   >("todos");
+  const [filtroFrecuencia, setFiltroFrecuencia] =
+    useState<FiltroFrecuencia>("todos");
   const [filtroMoneda, setFiltroMoneda] = useState<MonedaRegistro | null>(null);
   const [busqueda, setBusqueda] = useState("");
   const [prestamos, setPrestamos] = useState<PrestamoHistorial[]>([]);
@@ -139,8 +201,16 @@ export default function HistorialScreen() {
           c.nombre AS cliente_nombre,
           p.moneda AS moneda,
           p.monto_prestado AS monto_prestado,
+          p.interes_porcentaje AS interes_porcentaje,
+          p.monto_total AS monto_total,
           p.fecha_creacion AS fecha_prestamo,
-          p.saldo_pendiente AS saldo_pendiente
+          p.saldo_pendiente AS saldo_pendiente,
+          p.frecuencia AS frecuencia,
+          (
+            SELECT MAX(COALESCE(NULLIF(TRIM(pg2.fecha_registro_local), ''), pg2.fecha_pago))
+            FROM pagos pg2
+            WHERE pg2.prestamo_id = pg.prestamo_id
+          ) AS ultima_fecha_pago
         FROM pagos pg
         JOIN clientes c ON pg.cliente_id = c.id
         LEFT JOIN prestamos p ON pg.prestamo_id = p.id
@@ -172,12 +242,17 @@ export default function HistorialScreen() {
         (filtroEstado === "renovado"
           ? estadoLower === "renovado" || p.prestamo_origen_id !== null
           : estadoLower === filtroEstado);
+      const coincideFrecuencia =
+        filtroFrecuencia === "todos" ||
+        normalizarFrecuencia(p.frecuencia) === filtroFrecuencia;
       const coincideMoneda =
         filtroMoneda === null || normalizarMoneda(p.moneda) === filtroMoneda;
       const coincideNombre = !q || p.cliente_nombre.toLowerCase().includes(q);
-      return coincideEstado && coincideMoneda && coincideNombre;
+      return (
+        coincideEstado && coincideFrecuencia && coincideMoneda && coincideNombre
+      );
     });
-  }, [prestamos, busqueda, filtroEstado, filtroMoneda]);
+  }, [prestamos, busqueda, filtroEstado, filtroFrecuencia, filtroMoneda]);
 
   const pagosFiltrados = useMemo(() => {
     const q = busqueda.trim().toLowerCase();
@@ -282,34 +357,66 @@ export default function HistorialScreen() {
       />
 
       {tab === "prestamos" ? (
-        <View style={styles.filtrosRow}>
-          {(
-            [
-              { key: "todos", label: "Todos" },
-              { key: "activo", label: "Activos" },
-              { key: "pagado", label: "Pagados" },
-              { key: "renovado", label: "Renovados" },
-            ] as const
-          ).map((f) => (
-            <TouchableOpacity
-              key={f.key}
-              style={[
-                styles.filtroChip,
-                filtroEstado === f.key && styles.filtroChipActivo,
-              ]}
-              onPress={() => setFiltroEstado(f.key)}
-            >
-              <Text
+        <>
+          <View style={styles.filtrosRow}>
+            {(
+              [
+                { key: "todos", label: "Todos" },
+                { key: "activo", label: "Activos" },
+                { key: "pagado", label: "Pagados" },
+                { key: "renovado", label: "Renovados" },
+              ] as const
+            ).map((f) => (
+              <TouchableOpacity
+                key={f.key}
                 style={[
-                  styles.filtroTexto,
-                  filtroEstado === f.key && styles.textoBlanco,
+                  styles.filtroChip,
+                  filtroEstado === f.key && styles.filtroChipActivo,
                 ]}
+                onPress={() => setFiltroEstado(f.key)}
               >
-                {f.label}
-              </Text>
-            </TouchableOpacity>
-          ))}
-        </View>
+                <Text
+                  style={[
+                    styles.filtroTexto,
+                    filtroEstado === f.key && styles.textoBlanco,
+                  ]}
+                >
+                  {f.label}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+
+          <View style={styles.filtrosRow}>
+            {(
+              [
+                { key: "todos", label: "Todos" },
+                { key: "diario", label: "Diario" },
+                { key: "semanal", label: "Semanal" },
+                { key: "quincenal", label: "Quincenal" },
+                { key: "mensual", label: "Mensual" },
+              ] as const
+            ).map((fr) => (
+              <TouchableOpacity
+                key={fr.key}
+                style={[
+                  styles.filtroChip,
+                  filtroFrecuencia === fr.key && styles.filtroFrecuenciaActivo,
+                ]}
+                onPress={() => setFiltroFrecuencia(fr.key)}
+              >
+                <Text
+                  style={[
+                    styles.filtroTexto,
+                    filtroFrecuencia === fr.key && styles.textoBlanco,
+                  ]}
+                >
+                  {fr.label}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+        </>
       ) : null}
 
       <View style={styles.filtrosMonedaRow}>
@@ -358,6 +465,7 @@ export default function HistorialScreen() {
           renderItem={({ item }) => {
             const estadoLower = (item.estado || "").trim().toLowerCase();
             const monedaReg = normalizarMoneda(item.moneda);
+            const interesMostrar = item.interes_porcentaje ?? 0;
             const textoRenovacion =
               item.prestamo_origen_id !== null
                 ? `Renovado del préstamo #${item.prestamo_origen_id} → Nuevo #${item.id}`
@@ -387,7 +495,8 @@ export default function HistorialScreen() {
                   </Text>
                 ) : null}
                 <Text style={styles.fecha}>
-                  Fecha: {item.fecha_creacion || "N/A"} • Moneda: {monedaReg}
+                  Fecha: {item.fecha_creacion || "N/A"} • Moneda: {monedaReg} •
+                  Interés: {interesMostrar}%
                 </Text>
                 <Text style={styles.detalle}>
                   Prestado:{" "}
@@ -413,6 +522,8 @@ export default function HistorialScreen() {
           }
           renderItem={({ item }) => {
             const monedaReg = normalizarMoneda(item.moneda);
+            const interesMostrar = item.interes_porcentaje ?? 0;
+            const proximoPago = obtenerFechaProximoPago(item);
             return (
               <View style={styles.card}>
                 <View style={styles.cardHeader}>
@@ -431,14 +542,20 @@ export default function HistorialScreen() {
                   {formatearMontoRegistrado(item.monto_pagado, monedaReg)}
                 </Text>
                 <Text style={styles.detalle}>
-                  Fecha pago: {item.fecha_pago} • Moneda: {monedaReg}
+                  Fecha pago: {item.fecha_pago} • Moneda: {monedaReg} • Interés:{" "}
+                  {interesMostrar}%
                 </Text>
                 <Text style={styles.detallePrestamo}>
-                  Préstamo #{item.prestamo_id}:{" "}
-                  {formatearMontoRegistrado(item.monto_prestado, monedaReg)} •
-                  Fecha préstamo: {item.fecha_prestamo || "N/A"}
+                  Monto del Préstamo:{" "}
+                  {formatearMontoRegistrado(item.monto_prestado, monedaReg)} |
+                  Monto Total{" "}
+                  {formatearMontoRegistrado(item.monto_total, monedaReg)}
                 </Text>
-                <Text style={styles.saldo}>
+                <Text style={styles.detallePrestamo}>
+                  Fecha del prestamo: {item.fecha_prestamo || "N/A"} | Próximo
+                  pago: {proximoPago}
+                </Text>
+                <Text style={styles.detallePrestamo}>
                   Saldo pendiente:{" "}
                   {formatearMontoRegistrado(item.saldo_pendiente, monedaReg)}
                 </Text>
@@ -544,6 +661,9 @@ const styles = StyleSheet.create({
   },
   filtroChipActivo: {
     backgroundColor: "#1E293B",
+  },
+  filtroFrecuenciaActivo: {
+    backgroundColor: "#0F766E",
   },
   filtroMonedaChip: {
     backgroundColor: "#fff",

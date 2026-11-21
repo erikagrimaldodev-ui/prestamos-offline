@@ -18,7 +18,8 @@
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
       "predictiveBackGestureEnabled": false,
-      "package": "com.grimaldo36.prestamosoffline"
+      "package": "com.grimaldo36.prestamosoffline",
+      "permissions": ["USE_BIOMETRIC", "USE_FINGERPRINT"]
     },
     "web": {
       "output": "server",
@@ -34,7 +35,8 @@
           "imageWidth": 76
         }
       ],
-      "expo-sqlite"
+      "expo-sqlite",
+      "expo-local-authentication"
     ],
     "experiments": {
       "typedRoutes": true,

@@ -6,6 +6,9 @@ import {
   TouchableOpacity,
   Modal,
   TextInput,
+  ScrollView,
+  KeyboardAvoidingView,
+  Platform,
   StyleSheet,
 } from "react-native";
 import { useFocusEffect } from "expo-router";
@@ -18,6 +21,7 @@ interface Cliente {
   id: number;
   nombre: string;
   telefono: string | null;
+  direccion: string | null;
 }
 
 const CUOTAS_POR_FRECUENCIA: Record<FrecuenciaPago, string> = {
@@ -237,151 +241,180 @@ export default function PrestarScreen() {
       <FlatList
         data={clientesFiltrados}
         keyExtractor={(item) => item.id.toString()}
+        keyboardShouldPersistTaps="handled"
+        contentContainerStyle={styles.listaContent}
         ListEmptyComponent={
           <Text style={styles.vacio}>No hay clientes para mostrar.</Text>
         }
-        renderItem={({ item }) => (
-          <TouchableOpacity
-            style={styles.card}
-            onPress={() => abrirModal(item)}
-          >
-            <Text style={styles.nombre}>{item.nombre}</Text>
-            <Text style={styles.subtexto}>Tel: {item.telefono || "N/A"}</Text>
-          </TouchableOpacity>
-        )}
+        renderItem={({ item }) => {
+          const direccionLimpia = (item.direccion || "").trim();
+          return (
+            <TouchableOpacity
+              style={styles.card}
+              onPress={() => abrirModal(item)}
+            >
+              <Text style={styles.nombre}>{item.nombre}</Text>
+              <Text style={styles.subtexto}>
+                Teléfono: {item.telefono || "N/A"}
+                {direccionLimpia ? ` | Dirección: ${direccionLimpia}` : ""}
+              </Text>
+            </TouchableOpacity>
+          );
+        }}
       />
 
-      <Modal visible={modalVisible} animationType="slide" transparent>
-        <View style={styles.modalOverlay}>
+      <Modal
+        visible={modalVisible}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setModalVisible(false)}
+      >
+        <KeyboardAvoidingView
+          style={styles.modalOverlay}
+          behavior={Platform.OS === "ios" ? "padding" : "height"}
+        >
           <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>
-              Préstamo para: {clienteSeleccionado?.nombre}
-            </Text>
+            <ScrollView
+              showsVerticalScrollIndicator
+              keyboardShouldPersistTaps="handled"
+              contentContainerStyle={styles.modalScrollContent}
+            >
+              <Text style={styles.modalTitle}>
+                Préstamo para: {clienteSeleccionado?.nombre}
+              </Text>
 
-            <Text style={styles.label}>Tipo de moneda:</Text>
-            <View style={styles.row}>
-              {(
-                [
-                  { key: "COP", label: "COP" },
-                  { key: "USD", label: "USD" },
-                ] as const
-              ).map((m) => (
-                <TouchableOpacity
-                  key={m.key}
-                  style={[styles.chip, moneda === m.key && styles.chipActivo]}
-                  onPress={() => setMoneda(m.key)}
-                >
-                  <Text
-                    style={[
-                      styles.chipText,
-                      moneda === m.key && { color: "#fff" },
-                    ]}
-                  >
-                    {m.label}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-
-            <Text style={styles.label}>
-              Monto a prestar ({moneda === "USD" ? "USD$" : "$"}):
-            </Text>
-            <TextInput
-              style={styles.input}
-              keyboardType="numeric"
-              value={monto}
-              onChangeText={(texto) => setMonto(formatearInputMiles(texto))}
-              placeholder="Ej: 100.000"
-            />
-
-            <Text style={styles.label}>Interés (%):</Text>
-            <TextInput
-              style={styles.input}
-              keyboardType="numeric"
-              value={interes}
-              onChangeText={(texto) =>
-                setInteres(texto.replace(/[^0-9.,]/g, ""))
-              }
-              placeholder="Ej: 20"
-            />
-
-            <Text style={styles.label}>Frecuencia de pago:</Text>
-            <View style={styles.row}>
-              {(["diario", "semanal", "quincenal", "mensual"] as const).map(
-                (freq) => (
+              <Text style={styles.label}>Tipo de moneda:</Text>
+              <View style={styles.row}>
+                {(
+                  [
+                    { key: "COP", label: "COP" },
+                    { key: "USD", label: "USD" },
+                  ] as const
+                ).map((m) => (
                   <TouchableOpacity
-                    key={freq}
-                    style={[
-                      styles.chip,
-                      frecuencia === freq && styles.chipActivo,
-                    ]}
-                    onPress={() => seleccionarFrecuencia(freq)}
+                    key={m.key}
+                    style={[styles.chip, moneda === m.key && styles.chipActivo]}
+                    onPress={() => setMoneda(m.key)}
                   >
                     <Text
                       style={[
                         styles.chipText,
-                        frecuencia === freq && { color: "#fff" },
+                        moneda === m.key && { color: "#fff" },
                       ]}
                     >
-                      {freq.toUpperCase()}
+                      {m.label}
                     </Text>
                   </TouchableOpacity>
-                ),
-              )}
-            </View>
+                ))}
+              </View>
 
-            <Text style={styles.label}>Cantidad de días / cuotas:</Text>
-            <TextInput
-              style={styles.input}
-              keyboardType="numeric"
-              value={cuotas}
-              onChangeText={(texto) => setCuotas(texto.replace(/[^0-9]/g, ""))}
-              placeholder="Ej: 24"
-            />
-
-            <Text style={styles.label}>Fecha del préstamo (YYYY-MM-DD):</Text>
-            <TextInput
-              style={styles.input}
-              value={fechaManual}
-              onChangeText={setFechaManual}
-              placeholder="2026-11-20"
-              maxLength={10}
-            />
-
-            <View style={styles.resumenBox}>
-              <Text style={styles.resumenText}>
-                Moneda:{" "}
-                {moneda === "USD" ? "Dólares (USD)" : "Pesos colombianos (COP)"}
+              <Text style={styles.label}>
+                Monto a prestar ({moneda === "USD" ? "USD$" : "$"}):
               </Text>
-              <Text style={styles.resumenText}>
-                Total a Pagar: {formatearMontoMoneda(montoTotal, moneda, true)}
-              </Text>
-              <Text style={styles.resumenText}>
-                Valor Cuota ({frecuencia}):{" "}
-                {formatearMontoMoneda(valorCuota, moneda, true)}
-              </Text>
-            </View>
+              <TextInput
+                style={styles.input}
+                keyboardType="numeric"
+                value={monto}
+                onChangeText={(texto) => setMonto(formatearInputMiles(texto))}
+                placeholder="Ej: 100.000"
+              />
 
-            {aviso ? <Text style={styles.avisoError}>{aviso}</Text> : null}
+              <Text style={styles.label}>Interés (%):</Text>
+              <TextInput
+                style={styles.input}
+                keyboardType="numeric"
+                value={interes}
+                onChangeText={(texto) =>
+                  setInteres(texto.replace(/[^0-9.,]/g, ""))
+                }
+                placeholder="Ej: 20"
+              />
 
-            <View style={styles.modalActions}>
-              <TouchableOpacity
-                style={styles.btnCancelar}
-                onPress={() => setModalVisible(false)}
-              >
-                <Text style={{ color: "#fff" }}>Cancelar</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={styles.btnGuardar}
-                onPress={guardarPrestamo}
-              >
-                <Text style={{ color: "#fff", fontWeight: "bold" }}>
-                  Guardar Préstamo
+              <Text style={styles.label}>Frecuencia de pago:</Text>
+              <View style={styles.row}>
+                {(["diario", "semanal", "quincenal", "mensual"] as const).map(
+                  (freq) => (
+                    <TouchableOpacity
+                      key={freq}
+                      style={[
+                        styles.chip,
+                        frecuencia === freq && styles.chipActivo,
+                      ]}
+                      onPress={() => seleccionarFrecuencia(freq)}
+                    >
+                      <Text
+                        style={[
+                          styles.chipText,
+                          frecuencia === freq && { color: "#fff" },
+                        ]}
+                      >
+                        {freq.toUpperCase()}
+                      </Text>
+                    </TouchableOpacity>
+                  ),
+                )}
+              </View>
+
+              <Text style={styles.label}>Cantidad de días / cuotas:</Text>
+              <TextInput
+                style={styles.input}
+                keyboardType="numeric"
+                value={cuotas}
+                onChangeText={(texto) =>
+                  setCuotas(texto.replace(/[^0-9]/g, ""))
+                }
+                placeholder="Ej: 24"
+              />
+
+              <Text style={styles.label}>Fecha del préstamo (YYYY-MM-DD):</Text>
+              <TextInput
+                style={styles.input}
+                value={fechaManual}
+                onChangeText={setFechaManual}
+                placeholder="2026-11-20"
+                maxLength={10}
+              />
+
+              <View style={styles.resumenBox}>
+                <Text style={styles.resumenText}>
+                  Moneda:{" "}
+                  {moneda === "USD"
+                    ? "Dólares (USD)"
+                    : "Pesos colombianos (COP)"}
                 </Text>
-              </TouchableOpacity>
-            </View>
+                <Text style={styles.resumenText}>
+                  Total a Pagar:{" "}
+                  {formatearMontoMoneda(montoTotal, moneda, true)}
+                </Text>
+                <Text style={styles.resumenText}>
+                  Valor Cuota ({frecuencia}):{" "}
+                  {formatearMontoMoneda(valorCuota, moneda, true)}
+                </Text>
+              </View>
+
+              {aviso ? <Text style={styles.avisoError}>{aviso}</Text> : null}
+
+              <View style={styles.modalActions}>
+                <TouchableOpacity
+                  style={styles.btnCancelar}
+                  onPress={() => setModalVisible(false)}
+                >
+                  <Text style={{ color: "#fff", fontWeight: "bold" }}>
+                    Cancelar
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.btnGuardar}
+                  onPress={guardarPrestamo}
+                >
+                  <Text style={{ color: "#fff", fontWeight: "bold" }}>
+                    Guardar Préstamo
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            </ScrollView>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
     </View>
   );
@@ -389,6 +422,7 @@ export default function PrestarScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, padding: 16, backgroundColor: "#F8FAFC" },
+  listaContent: { paddingBottom: 32 },
   buscador: {
     backgroundColor: "#fff",
     borderWidth: 1,
@@ -414,7 +448,19 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(0,0,0,0.5)",
     padding: 16,
   },
-  modalContent: { backgroundColor: "#fff", borderRadius: 12, padding: 20 },
+  modalContent: {
+    backgroundColor: "#fff",
+    borderRadius: 12,
+    maxHeight: "90%",
+    width: "100%",
+    maxWidth: 520,
+    alignSelf: "center",
+    overflow: "hidden",
+  },
+  modalScrollContent: {
+    padding: 20,
+    paddingBottom: 28,
+  },
   modalTitle: { fontSize: 18, fontWeight: "bold", marginBottom: 12 },
   label: { fontSize: 13, fontWeight: "600", marginTop: 8, color: "#334155" },
   input: {
@@ -423,6 +469,7 @@ const styles = StyleSheet.create({
     borderRadius: 6,
     padding: 10,
     marginTop: 4,
+    fontSize: 15,
   },
   row: { flexDirection: "row", flexWrap: "wrap", gap: 6, marginTop: 6 },
   chip: {

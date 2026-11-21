@@ -12,16 +12,24 @@ import { useFocusEffect } from "expo-router";
 import { getAllRows, runQuery } from "../../database/db";
 
 type Moneda = "COP" | "USD";
+type FiltroFrecuencia = "todas" | "diario" | "semanal" | "mensual";
 
 interface PrestamoActivo {
   id: number;
   cliente_id: number;
+  monto_prestado?: number | null;
+  interes_porcentaje?: number | null;
+  monto_total?: number | null;
   saldo_pendiente: number;
   valor_cuota: number;
+  cantidad_cuotas?: number | null;
   frecuencia: string;
+  fecha_creacion?: string | null;
   moneda?: string | null;
   cliente_nombre: string;
   pagado_hoy: number;
+  ultima_fecha_pago?: string | null;
+  total_pagos_registrados?: number | null;
 }
 
 interface SumaPagosHoyRow {
@@ -38,6 +46,31 @@ interface PagoPendienteConversion {
 
 const normalizarMoneda = (moneda?: string | null): Moneda => {
   return (moneda || "").trim().toUpperCase() === "USD" ? "USD" : "COP";
+};
+
+const normalizarFrecuencia = (
+  frecuencia?: string | null,
+): "diario" | "semanal" | "quincenal" | "mensual" | "otra" => {
+  const f = (frecuencia || "").trim().toLowerCase();
+  if (
+    f === "diario" ||
+    f === "diaria" ||
+    f === "dias" ||
+    f === "día" ||
+    f === "días"
+  ) {
+    return "diario";
+  }
+  if (f === "semanal" || f === "semanas" || f === "semana") {
+    return "semanal";
+  }
+  if (f === "quincenal" || f === "quincena" || f === "quincenas") {
+    return "quincenal";
+  }
+  if (f === "mensual" || f === "mes" || f === "meses" || f === "mensuales") {
+    return "mensual";
+  }
+  return "otra";
 };
 
 const formatearMilesEntero = (valor: number | null | undefined): string => {
@@ -65,6 +98,21 @@ const formatearMontoPorMoneda = (
   return `$ ${formatearMilesEntero(valor)}`;
 };
 
+const formatearPorcentaje = (valor: number | null | undefined): string => {
+  const num = Number(valor ?? 0);
+  if (Number.isNaN(num)) return "0";
+  return Number.isInteger(num) ? String(num) : String(num);
+};
+
+const obtenerMontoTotalEfectivo = (prestamo: PrestamoActivo): number => {
+  if (prestamo.monto_total != null && Number(prestamo.monto_total) > 0) {
+    return Number(prestamo.monto_total);
+  }
+  const base = Number(prestamo.monto_prestado || 0);
+  const pct = Number(prestamo.interes_porcentaje || 0);
+  return base + (base * pct) / 100;
+};
+
 const formatearInputEnteroMiles = (texto: string): string => {
   const soloDigitos = texto.replace(/[^0-9]/g, "");
   if (!soloDigitos) return "";
@@ -83,7 +131,6 @@ const parseInputEnteroMiles = (texto: string): number => {
 const parseDecimalFlexible = (texto: string): number => {
   const limpio = texto.trim().replace(/\s+/g, "");
   if (!limpio) return 0;
-  // Si tiene coma y punto, asumimos punto como miles y coma como decimal (ej. 4.200,50)
   if (limpio.includes(",") && limpio.includes(".")) {
     const val = parseFloat(limpio.replace(/\./g, "").replace(",", "."));
     return Number.isNaN(val) ? 0 : val;
@@ -104,6 +151,148 @@ const obtenerFechaLocalHoy = (): string => {
   return `${year}-${month}-${day}`;
 };
 
+const formatearFechaISO = (fecha: Date): string => {
+  const y = fecha.getFullYear();
+  const m = String(fecha.getMonth() + 1).padStart(2, "0");
+  const d = String(fecha.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+};
+
+const parsearFechaLocalISO = (fechaStr?: string | null): Date | null => {
+  if (!fechaStr) return null;
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(fechaStr.trim());
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]) - 1;
+  const day = Number(match[3]);
+  const fecha = new Date(year, month, day);
+  return Number.isNaN(fecha.getTime()) ? null : fecha;
+};
+
+const diferenciaDiasCalendario = (
+  fechaInicioStr?: string | null,
+  fechaFinStr?: string | null,
+): number | null => {
+  const inicio = parsearFechaLocalISO(fechaInicioStr);
+  const fin = parsearFechaLocalISO(fechaFinStr);
+  if (!inicio || !fin) return null;
+  const msPorDia = 1000 * 60 * 60 * 24;
+  return Math.floor((fin.getTime() - inicio.getTime()) / msPorDia);
+};
+
+const sumarIntervaloCuotaISO = (
+  fechaBaseStr: string | null | undefined,
+  freq: ReturnType<typeof normalizarFrecuencia>,
+  numeroCuota: number,
+): string | null => {
+  const base = parsearFechaLocalISO(fechaBaseStr);
+  if (!base) return null;
+  const paso = Math.max(1, numeroCuota);
+
+  if (freq === "diario") {
+    const copia = new Date(
+      base.getFullYear(),
+      base.getMonth(),
+      base.getDate() + paso,
+    );
+    return formatearFechaISO(copia);
+  }
+  if (freq === "semanal") {
+    const copia = new Date(
+      base.getFullYear(),
+      base.getMonth(),
+      base.getDate() + paso * 7,
+    );
+    return formatearFechaISO(copia);
+  }
+  if (freq === "quincenal") {
+    const copia = new Date(
+      base.getFullYear(),
+      base.getMonth(),
+      base.getDate() + paso * 15,
+    );
+    return formatearFechaISO(copia);
+  }
+  if (freq === "mensual") {
+    const copia = new Date(
+      base.getFullYear(),
+      base.getMonth() + paso,
+      base.getDate(),
+    );
+    return formatearFechaISO(copia);
+  }
+  return null;
+};
+
+const obtenerFechaRegistroEfectiva = (
+  prestamo: PrestamoActivo,
+  fechaLocalRespaldo: string,
+): string => {
+  const limpia = (prestamo.fecha_creacion || "").trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(limpia)) {
+    return limpia;
+  }
+  return fechaLocalRespaldo;
+};
+
+const calcularCuotasFaltantes = (prestamo: PrestamoActivo): number => {
+  const saldo = Number(prestamo.saldo_pendiente || 0);
+  const cuota = Number(prestamo.valor_cuota || 0);
+  if (saldo <= 0) return 0;
+  if (cuota > 0) {
+    return Math.max(1, Math.ceil(saldo / cuota));
+  }
+  return Math.max(0, Number(prestamo.cantidad_cuotas || 0));
+};
+
+const calcularMontoPagadoEstimado = (prestamo: PrestamoActivo): number => {
+  const totalBase = obtenerMontoTotalEfectivo(prestamo);
+  const saldo = Number(prestamo.saldo_pendiente || 0);
+  return Math.max(0, totalBase - saldo);
+};
+
+const obtenerProximaFechaCuota = (
+  prestamo: PrestamoActivo,
+  fechaLocalRespaldo: string,
+): string | null => {
+  const fechaBase = obtenerFechaRegistroEfectiva(prestamo, fechaLocalRespaldo);
+  const freq = normalizarFrecuencia(prestamo.frecuencia);
+  if (freq === "otra") return null;
+
+  const cuotaVal = Math.max(1, Number(prestamo.valor_cuota || 1));
+  const pagado = calcularMontoPagadoEstimado(prestamo);
+  const cuotasCubiertas = Math.max(0, Math.floor(pagado / cuotaVal));
+  const siguienteCuotaNumero = cuotasCubiertas + 1;
+
+  return sumarIntervaloCuotaISO(fechaBase, freq, siguienteCuotaNumero);
+};
+
+const obtenerFechaCuotaVencida = (
+  prestamo: PrestamoActivo,
+  fechaHoyRef: string,
+): { fechaCuota: string; diasAtraso: number } | null => {
+  const fechaCuotaPrevista = obtenerProximaFechaCuota(prestamo, fechaHoyRef);
+  if (!fechaCuotaPrevista) return null;
+
+  if (fechaHoyRef > fechaCuotaPrevista) {
+    const atraso =
+      diferenciaDiasCalendario(fechaCuotaPrevista, fechaHoyRef) ?? 1;
+    return { fechaCuota: fechaCuotaPrevista, diasAtraso: Math.max(1, atraso) };
+  }
+  return null;
+};
+
+const obtenerAlertaMoraLetras = (
+  prestamo: PrestamoActivo,
+  fechaHoyRef: string,
+): string | null => {
+  const vencimientoCuota = obtenerFechaCuotaVencida(prestamo, fechaHoyRef);
+  if (vencimientoCuota && vencimientoCuota.diasAtraso > 2) {
+    return `EN MORA: ATRASO DE LA FECHA DE LA CUOTA (${vencimientoCuota.fechaCuota} • ${vencimientoCuota.diasAtraso} DÍAS DE ATRASO)`;
+  }
+  return null;
+};
+
 export default function RegistrarPagoScreen() {
   const [prestamosActivos, setPrestamosActivos] = useState<PrestamoActivo[]>(
     [],
@@ -113,19 +302,18 @@ export default function RegistrarPagoScreen() {
     useState<PrestamoActivo | null>(null);
   const [modalPagoVisible, setModalPagoVisible] = useState(false);
   const [busqueda, setBusqueda] = useState("");
+  const [filtroFrecuencia, setFiltroFrecuencia] =
+    useState<FiltroFrecuencia>("todas");
   const [montoPagado, setMontoPagado] = useState("");
   const [monedaPago, setMonedaPago] = useState<Moneda>("COP");
 
-  // Modal de tasa diaria cuando la moneda del pago difiere de la del préstamo
   const [pagoPendienteTasa, setPagoPendienteTasa] =
     useState<PagoPendienteConversion | null>(null);
   const [tasaDiariaInput, setTasaDiariaInput] = useState("00");
   const [errorTasa, setErrorTasa] = useState("");
   const [guardandoTasa, setGuardandoTasa] = useState(false);
 
-  // Fecha local del día (guía única para la franja verde "Pagado hoy")
   const [fechaLocalHoy, setFechaLocalHoy] = useState(obtenerFechaLocalHoy());
-  // Fecha manual opcional de la tarjeta / cuota
   const [fechaTarjetaOpcional, setFechaTarjetaOpcional] = useState("");
 
   const [mensajeModal, setMensajeModal] = useState<{
@@ -148,9 +336,14 @@ export default function RegistrarPagoScreen() {
       SELECT
         p.id,
         p.cliente_id,
+        p.monto_prestado,
+        p.interes_porcentaje,
+        p.monto_total,
         p.saldo_pendiente,
         p.valor_cuota,
+        p.cantidad_cuotas,
         p.frecuencia,
+        p.fecha_creacion,
         p.moneda,
         c.nombre AS cliente_nombre,
         CASE
@@ -160,7 +353,17 @@ export default function RegistrarPagoScreen() {
               AND COALESCE(pg.fecha_registro_local, pg.fecha_pago) = ?
           ) THEN 1
           ELSE 0
-        END AS pagado_hoy
+        END AS pagado_hoy,
+        (
+          SELECT MAX(COALESCE(pg2.fecha_registro_local, pg2.fecha_pago))
+          FROM pagos pg2
+          WHERE pg2.prestamo_id = p.id
+        ) AS ultima_fecha_pago,
+        (
+          SELECT COUNT(*)
+          FROM pagos pg3
+          WHERE pg3.prestamo_id = p.id
+        ) AS total_pagos_registrados
       FROM prestamos p
       JOIN clientes c ON p.cliente_id = c.id
       WHERE p.estado = 'activo'
@@ -207,11 +410,13 @@ export default function RegistrarPagoScreen() {
 
   const prestamosFiltrados = useMemo(() => {
     const q = busqueda.trim().toLowerCase();
-    if (!q) return prestamosActivos;
-    return prestamosActivos.filter((p) =>
-      p.cliente_nombre.toLowerCase().includes(q),
-    );
-  }, [prestamosActivos, busqueda]);
+    return prestamosActivos.filter((p) => {
+      const coincideNombre = !q || p.cliente_nombre.toLowerCase().includes(q);
+      if (!coincideNombre) return false;
+      if (filtroFrecuencia === "todas") return true;
+      return normalizarFrecuencia(p.frecuencia) === filtroFrecuencia;
+    });
+  }, [prestamosActivos, busqueda, filtroFrecuencia]);
 
   const handleMontoChange = (texto: string) => {
     setMontoPagado(formatearInputEnteroMiles(texto));
@@ -238,7 +443,6 @@ export default function RegistrarPagoScreen() {
     setErrorTasa("");
   };
 
-  // Cálculo en vivo dentro del modal de tasa diaria
   const calculoConversionTasa = useMemo(() => {
     if (!pagoPendienteTasa) {
       return {
@@ -258,10 +462,8 @@ export default function RegistrarPagoScreen() {
     let equivalente = 0;
     if (tasa > 0) {
       if (mPago === "COP" && mPrest === "USD") {
-        // Pago en pesos, préstamo en dólares: COP / tasa
         equivalente = montoPagoIngresado / tasa;
       } else if (mPago === "USD" && mPrest === "COP") {
-        // Pago en dólares, préstamo en pesos: USD * tasa
         equivalente = montoPagoIngresado * tasa;
       }
     }
@@ -379,7 +581,6 @@ export default function RegistrarPagoScreen() {
 
     const monedaPrestamo = normalizarMoneda(prestamoSeleccionado.moneda);
 
-    // Si la moneda del pago es diferente a la moneda del préstamo, abrir modal de tasa diaria
     if (monedaPago !== monedaPrestamo) {
       setErrorTasa("");
       setPagoPendienteTasa({
@@ -451,6 +652,37 @@ export default function RegistrarPagoScreen() {
         </View>
       </View>
 
+      <Text style={styles.label}>Filtrar por cuota:</Text>
+      <View style={styles.filtrosFrecuenciaRow}>
+        {(
+          [
+            { key: "todas", label: "Todas" },
+            { key: "diario", label: "Diarias" },
+            { key: "semanal", label: "Semanal" },
+            { key: "quincenal", label: "Quincenal" },
+            { key: "mensual", label: "Mensual" },
+          ] as const
+        ).map((op) => {
+          const activo = filtroFrecuencia === op.key;
+          return (
+            <TouchableOpacity
+              key={op.key}
+              style={[styles.filtroChip, activo && styles.filtroChipActivo]}
+              onPress={() => setFiltroFrecuencia(op.key)}
+            >
+              <Text
+                style={[
+                  styles.filtroChipTexto,
+                  activo && styles.filtroChipTextoActivo,
+                ]}
+              >
+                {op.label}
+              </Text>
+            </TouchableOpacity>
+          );
+        })}
+      </View>
+
       {mensaje ? (
         <View
           style={[
@@ -478,11 +710,32 @@ export default function RegistrarPagoScreen() {
         {prestamosFiltrados.map((item) => {
           const pagadoHoy = item.pagado_hoy === 1;
           const monedaItem = normalizarMoneda(item.moneda);
+          const montoPrestadoValor =
+            item.monto_prestado != null && Number(item.monto_prestado) > 0
+              ? Number(item.monto_prestado)
+              : Number(item.monto_total || 0);
+          const montoTotalValor = obtenerMontoTotalEfectivo(item);
+          const porcentajeTexto = formatearPorcentaje(item.interes_porcentaje);
+          const fechaRegistroPrestamo = obtenerFechaRegistroEfectiva(
+            item,
+            fechaHoyEfectiva,
+          );
+          const cuotasFaltantes = calcularCuotasFaltantes(item);
+          const montoPagadoValor = calcularMontoPagadoEstimado(item);
+          const proximaFechaCuota = obtenerProximaFechaCuota(
+            item,
+            fechaHoyEfectiva,
+          );
+          const alertaMora = obtenerAlertaMoraLetras(item, fechaHoyEfectiva);
 
           return (
             <TouchableOpacity
               key={item.id}
-              style={[styles.itemCard, pagadoHoy && styles.itemCardPagadoHoy]}
+              style={[
+                styles.itemCard,
+                pagadoHoy && styles.itemCardPagadoHoy,
+                alertaMora && !pagadoHoy && styles.itemCardMora,
+              ]}
               onPress={() => abrirModalPago(item)}
             >
               <View style={styles.itemRow}>
@@ -494,36 +747,61 @@ export default function RegistrarPagoScreen() {
                         pagadoHoy && styles.textoPagadoHoy,
                       ]}
                     >
-                      {item.cliente_nombre} (#{item.id}) • {monedaItem}
+                      {item.cliente_nombre} (#{item.id}) Monto prestado:{" "}
+                      {formatearMontoPorMoneda(montoPrestadoValor, monedaItem)}
                     </Text>
+                    <TouchableOpacity
+                      style={styles.btnPagarItem}
+                      onPress={() => abrirModalPago(item)}
+                    >
+                      <Text style={styles.btnPagarItemTexto}>Pagar</Text>
+                    </TouchableOpacity>
                     {pagadoHoy ? (
                       <View style={styles.badgePagado}>
                         <Text style={styles.badgeTexto}>Pagado hoy</Text>
                       </View>
                     ) : null}
                   </View>
+
+                  <Text style={styles.itemFechaRegistro}>
+                    Fecha del préstamo: {fechaRegistroPrestamo}
+                    <Text style={styles.textoNormalSinNegrita}>
+                      {" "}
+                      | Monto total:{" "}
+                      {formatearMontoPorMoneda(montoTotalValor, monedaItem)}
+                    </Text>
+                  </Text>
+
                   <Text style={styles.itemSub}>
-                    Saldo:{" "}
-                    {formatearMontoPorMoneda(item.saldo_pendiente, monedaItem)}{" "}
-                    | Cuota ({item.frecuencia}):{" "}
+                    Interés: {porcentajeTexto}% | Cuota ({item.frecuencia}):{" "}
                     {formatearMontoPorMoneda(item.valor_cuota, monedaItem)}
                   </Text>
-                </View>
 
-                <TouchableOpacity
-                  style={styles.btnPagarItem}
-                  onPress={() => abrirModalPago(item)}
-                >
-                  <Text style={styles.btnPagarItemTexto}>Pagar</Text>
-                </TouchableOpacity>
+                  <Text style={styles.itemDetalleCuotas}>
+                    Cuotas faltantes: {cuotasFaltantes} | Pagado:{" "}
+                    {formatearMontoPorMoneda(montoPagadoValor, monedaItem)} |
+                    Pendiente:{" "}
+                    {formatearMontoPorMoneda(item.saldo_pendiente, monedaItem)}
+                  </Text>
+
+                  {proximaFechaCuota ? (
+                    <Text style={styles.proximaCuotaTexto}>
+                      Próxima cuota programada: {proximaFechaCuota}
+                    </Text>
+                  ) : null}
+
+                  {alertaMora ? (
+                    <Text style={styles.moraLetras}>{alertaMora}</Text>
+                  ) : null}
+                </View>
               </View>
             </TouchableOpacity>
           );
         })}
         {prestamosFiltrados.length === 0 && (
           <Text style={styles.vacio}>
-            {busqueda.trim()
-              ? "No se encontraron préstamos activos para ese nombre."
+            {busqueda.trim() || filtroFrecuencia !== "todas"
+              ? "No se encontraron préstamos activos con ese filtro."
               : "No hay préstamos activos con saldo pendiente."}
           </Text>
         )}
@@ -546,8 +824,29 @@ export default function RegistrarPagoScreen() {
             {prestamoSeleccionado ? (
               <View style={styles.resumenPrestamo}>
                 <Text style={styles.resumenTexto}>
-                  Moneda del préstamo:{" "}
-                  {normalizarMoneda(prestamoSeleccionado.moneda)}
+                  Fecha del préstamo:{" "}
+                  {obtenerFechaRegistroEfectiva(
+                    prestamoSeleccionado,
+                    fechaHoyEfectiva,
+                  )}
+                  <Text style={styles.textoNormalSinNegrita}> </Text>
+                </Text>
+                <Text style={styles.resumenTexto}>
+                  Monto prestado:{" "}
+                  {formatearMontoPorMoneda(
+                    prestamoSeleccionado.monto_prestado ??
+                      prestamoSeleccionado.monto_total,
+                    normalizarMoneda(prestamoSeleccionado.moneda),
+                  )}
+                </Text>
+                <Text style={styles.resumenTexto}>
+                  Interés:{" "}
+                  {formatearPorcentaje(prestamoSeleccionado.interes_porcentaje)}
+                  % | Monto total:{" "}
+                  {formatearMontoPorMoneda(
+                    obtenerMontoTotalEfectivo(prestamoSeleccionado),
+                    normalizarMoneda(prestamoSeleccionado.moneda),
+                  )}
                 </Text>
                 <Text style={styles.resumenTexto}>
                   Saldo pendiente:{" "}
@@ -563,6 +862,22 @@ export default function RegistrarPagoScreen() {
                     normalizarMoneda(prestamoSeleccionado.moneda),
                   )}
                 </Text>
+                <Text style={styles.resumenTexto}>
+                  Cuotas faltantes:{" "}
+                  {calcularCuotasFaltantes(prestamoSeleccionado)}
+                </Text>
+                {obtenerProximaFechaCuota(
+                  prestamoSeleccionado,
+                  fechaHoyEfectiva,
+                ) ? (
+                  <Text style={styles.resumenTexto}>
+                    Próxima cuota programada:{" "}
+                    {obtenerProximaFechaCuota(
+                      prestamoSeleccionado,
+                      fechaHoyEfectiva,
+                    )}
+                  </Text>
+                ) : null}
                 <Text style={styles.resumenTexto}>
                   Fecha local del día: {fechaHoyEfectiva}
                 </Text>
@@ -763,9 +1078,6 @@ const styles = StyleSheet.create({
     gap: 10,
     alignItems: "flex-start",
   },
-  cajaFechaHoy: {
-    width: 150,
-  },
   label: { fontSize: 13, fontWeight: "600", color: "#334155", marginTop: 8 },
   buscador: {
     backgroundColor: "#fff",
@@ -776,14 +1088,32 @@ const styles = StyleSheet.create({
     marginTop: 6,
     fontSize: 15,
   },
-  inputFechaHoy: {
-    backgroundColor: "#fff",
+  filtrosFrecuenciaRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    marginTop: 6,
+    marginBottom: 4,
+  },
+  filtroChip: {
+    paddingVertical: 7,
+    paddingHorizontal: 13,
+    borderRadius: 8,
     borderWidth: 1,
     borderColor: "#CBD5E1",
-    borderRadius: 8,
-    padding: 11,
-    marginTop: 6,
-    fontSize: 14,
+    backgroundColor: "#fff",
+  },
+  filtroChipActivo: {
+    backgroundColor: "#0F172A",
+    borderColor: "#0F172A",
+  },
+  filtroChipTexto: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#334155",
+  },
+  filtroChipTextoActivo: {
+    color: "#fff",
   },
   bannerMensaje: {
     marginTop: 10,
@@ -818,6 +1148,10 @@ const styles = StyleSheet.create({
     backgroundColor: "#DCFCE7",
     borderColor: "#16A34A",
   },
+  itemCardMora: {
+    borderColor: "#DC2626",
+    backgroundColor: "#FFF5F5",
+  },
   itemRow: {
     flexDirection: "row",
     justifyContent: "space-between",
@@ -831,11 +1165,40 @@ const styles = StyleSheet.create({
   },
   itemTitle: { fontSize: 15, fontWeight: "bold", color: "#0F172A" },
   textoPagadoHoy: { color: "#14532D" },
-  itemSub: { fontSize: 12, color: "#64748B", marginTop: 3 },
+  itemFechaRegistro: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#0F172A",
+    marginTop: 2,
+  },
+  textoNormalSinNegrita: {
+    fontWeight: "400",
+    color: "#353638",
+  },
+  itemSub: { fontSize: 12, color: "#353638", marginTop: 2 },
+  itemDetalleCuotas: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: "#1f2733",
+    marginTop: 2,
+  },
+  proximaCuotaTexto: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: "#002897",
+    marginTop: 2,
+  },
+  moraLetras: {
+    fontSize: 11,
+    fontWeight: "800",
+    color: "#DC2626",
+    marginTop: 4,
+    letterSpacing: 0.3,
+  },
   badgePagado: {
-    backgroundColor: "#16A34A",
-    paddingHorizontal: 8,
-    paddingVertical: 2,
+    backgroundColor: "#074a1f",
+    paddingHorizontal: 9,
+    paddingVertical: 4,
     borderRadius: 999,
   },
   badgeTexto: {
@@ -846,7 +1209,7 @@ const styles = StyleSheet.create({
   btnPagarItem: {
     backgroundColor: "#16A34A",
     paddingVertical: 9,
-    paddingHorizontal: 14,
+    paddingHorizontal: 13,
     borderRadius: 8,
   },
   btnPagarItemTexto: {
@@ -864,7 +1227,7 @@ const styles = StyleSheet.create({
   },
   modalCard: {
     width: "100%",
-    maxWidth: 440,
+    maxWidth: 450,
     backgroundColor: "#fff",
     borderRadius: 12,
     padding: 20,

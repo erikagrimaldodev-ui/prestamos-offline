@@ -7,6 +7,8 @@ import {
   ScrollView,
   Modal,
   StyleSheet,
+  KeyboardAvoidingView,
+  Platform,
 } from "react-native";
 import { useFocusEffect } from "expo-router";
 import { getAllRows, runQuery } from "../../database/db";
@@ -212,7 +214,7 @@ export default function CajaBancosScreen() {
       dineroCobrado: 0,
       efectivoEntregado: 0,
       gastos: 0,
-      aEntregarAlJefe: 0,
+      restantePorEntregar: 0,
     };
 
     const porMoneda: Record<Moneda, typeof inicial> = {
@@ -261,7 +263,7 @@ export default function CajaBancosScreen() {
 
     for (const m of ["COP", "USD"] as const) {
       const d = porMoneda[m];
-      d.aEntregarAlJefe =
+      d.restantePorEntregar =
         d.efectivoRecibido +
         d.dineroCobrado -
         (d.sumaPrestamos + d.gastos + d.efectivoEntregado);
@@ -269,12 +271,6 @@ export default function CajaBancosScreen() {
 
     return porMoneda;
   }, [movimientos, prestamos, pagos, fechaEfectiva]);
-
-  const movimientosDelDia = useMemo(() => {
-    return movimientos.filter(
-      (m) => normalizarFecha(m.fecha) === fechaEfectiva,
-    );
-  }, [movimientos, fechaEfectiva]);
 
   const abrirModal = (tipo: Exclude<TipoModalCaja, null>) => {
     setAviso(null);
@@ -288,7 +284,7 @@ export default function CajaBancosScreen() {
     } else if (tipo === "efectivo_entregado") {
       setDescripcionModal("Dinero entregado al jefe");
     } else {
-      setDescripcionModal("Gasto diario");
+      setDescripcionModal("Gasto");
     }
   };
 
@@ -300,11 +296,13 @@ export default function CajaBancosScreen() {
   const handleMonedaModalChange = (nuevaMoneda: Moneda) => {
     const actualNum = parseMontoPorMoneda(montoModal, monedaModal);
     setMonedaModal(nuevaMoneda);
-    setMontoModal(
-      actualNum > 0
-        ? formatearInputPorMoneda(String(actualNum), nuevaMoneda)
-        : "",
-    );
+    if (actualNum <= 0) {
+      setMontoModal("");
+      return;
+    }
+    const valorStr =
+      nuevaMoneda === "COP" ? String(Math.round(actualNum)) : String(actualNum);
+    setMontoModal(formatearInputPorMoneda(valorStr, nuevaMoneda));
   };
 
   const guardarMovimientoModal = async () => {
@@ -323,26 +321,24 @@ export default function CajaBancosScreen() {
       return;
     }
 
-    const descLimpia =
+    const descBase =
       descripcionModal.trim() ||
       (tipoModal === "efectivo_recibido"
         ? "Efectivo recibido del jefe"
         : tipoModal === "efectivo_entregado"
           ? "Dinero entregado al jefe"
-          : "Gasto diario");
+          : "Gasto");
 
-    const descripcionConMoneda = descLimpia
-      .toUpperCase()
-      .includes(`(${monedaModal})`)
-      ? descLimpia
-      : `${descLimpia} (${monedaModal})`;
+    const descFinal = descBase.toUpperCase().includes(`(${monedaModal})`)
+      ? descBase
+      : `${descBase} (${monedaModal})`;
 
     try {
       try {
         await runQuery(
           `INSERT INTO movimientos_caja (tipo, descripcion, monto, fecha, moneda)
            VALUES (?, ?, ?, ?, ?)`,
-          [tipoModal, descripcionConMoneda, montoNum, fechaLimpia, monedaModal],
+          [tipoModal, descFinal, montoNum, fechaLimpia, monedaModal],
         );
       } catch (err: any) {
         const msg = String(err?.message || "");
@@ -352,7 +348,7 @@ export default function CajaBancosScreen() {
         await runQuery(
           `INSERT INTO movimientos_caja (tipo, descripcion, monto, fecha)
            VALUES (?, ?, ?, ?)`,
-          [tipoModal, descripcionConMoneda, montoNum, fechaLimpia],
+          [tipoModal, descFinal, montoNum, fechaLimpia],
         );
       }
 
@@ -387,157 +383,232 @@ export default function CajaBancosScreen() {
         : "Registrar Gasto";
 
   return (
-    <ScrollView style={styles.container}>
-      {aviso ? (
-        <View
-          style={[
-            styles.banner,
-            aviso.tipo === "exito" ? styles.bannerExito : styles.bannerError,
-          ]}
-        >
-          <Text
-            style={[
-              styles.bannerTexto,
-              aviso.tipo === "exito" ? styles.textoExito : styles.textoError,
-            ]}
-          >
-            {aviso.texto}
-          </Text>
-        </View>
-      ) : null}
-
-      <View style={styles.gridDos}>
-        <View style={styles.cardEntregar}>
-          <Text style={styles.entregarLabel}>A Entregar al Jefe (COP)</Text>
-          <Text style={styles.entregarValor}>
-            {formatearMontoMoneda(resumenPorMoneda.COP.aEntregarAlJefe, "COP")}
-          </Text>
-          <Text style={styles.entregarSub}>Fecha: {fechaEfectiva}</Text>
-        </View>
-        <View style={styles.cardEntregar}>
-          <Text style={styles.entregarLabel}>A Entregar al Jefe (USD)</Text>
-          <Text style={styles.entregarValor}>
-            {formatearMontoMoneda(resumenPorMoneda.USD.aEntregarAlJefe, "USD")}
-          </Text>
-          <Text style={styles.entregarSub}>Fecha: {fechaEfectiva}</Text>
-        </View>
-      </View>
-
-      <TouchableOpacity
-        style={[styles.tarjeta, styles.tarjetaEfectivo]}
-        onPress={() => abrirModal("efectivo_recibido")}
+    <KeyboardAvoidingView
+      style={styles.keyboardWrapper}
+      behavior={Platform.OS === "ios" ? "padding" : "height"}
+    >
+      <ScrollView
+        style={styles.container}
+        contentContainerStyle={styles.scrollContent}
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator
       >
-        <View style={styles.tarjetaHeader}>
-          <Text style={styles.tarjetaTitulo}>Efectivo Recibido (del Jefe)</Text>
-          <Text style={styles.tarjetaAccion}>+ Registrar (toca aquí)</Text>
-        </View>
-        <Text style={styles.montoLinea}>
-          COP:{" "}
-          {formatearMontoMoneda(resumenPorMoneda.COP.efectivoRecibido, "COP")}
-        </Text>
-        <Text style={styles.montoLinea}>
-          USD:{" "}
-          {formatearMontoMoneda(resumenPorMoneda.USD.efectivoRecibido, "USD")}
-        </Text>
-      </TouchableOpacity>
-
-      <View style={styles.tarjeta}>
-        <View style={styles.tarjetaHeader}>
-          <Text style={styles.tarjetaTitulo}>Suma de Préstamos</Text>
-          <Text style={styles.tarjetaBadgeNegativo}>Sale de caja</Text>
-        </View>
-        <Text style={styles.montoLinea}>
-          COP: {formatearMontoMoneda(resumenPorMoneda.COP.sumaPrestamos, "COP")}
-        </Text>
-        <Text style={styles.montoLinea}>
-          USD: {formatearMontoMoneda(resumenPorMoneda.USD.sumaPrestamos, "USD")}
-        </Text>
-      </View>
-
-      <View style={styles.tarjeta}>
-        <View style={styles.tarjetaHeader}>
-          <Text style={styles.tarjetaTitulo}>Dinero Cobrado a Clientes</Text>
-          <Text style={styles.tarjetaBadgePositivo}>Entra a caja</Text>
-        </View>
-        <Text style={styles.montoLinea}>
-          COP: {formatearMontoMoneda(resumenPorMoneda.COP.dineroCobrado, "COP")}
-        </Text>
-        <Text style={styles.montoLinea}>
-          USD: {formatearMontoMoneda(resumenPorMoneda.USD.dineroCobrado, "USD")}
-        </Text>
-      </View>
-
-      <TouchableOpacity
-        style={styles.tarjeta}
-        onPress={() => abrirModal("efectivo_entregado")}
-      >
-        <View style={styles.tarjetaHeader}>
-          <Text style={styles.tarjetaTitulo}>Dinero Entregado (al Jefe)</Text>
-          <Text style={styles.tarjetaAccionNegativa}>- Registrar entrega</Text>
-        </View>
-        <Text style={styles.montoLinea}>
-          COP:{" "}
-          {formatearMontoMoneda(resumenPorMoneda.COP.efectivoEntregado, "COP")}
-        </Text>
-        <Text style={styles.montoLinea}>
-          USD:{" "}
-          {formatearMontoMoneda(resumenPorMoneda.USD.efectivoEntregado, "USD")}
-        </Text>
-      </TouchableOpacity>
-
-      <TouchableOpacity
-        style={styles.tarjeta}
-        onPress={() => abrirModal("gasto")}
-      >
-        <View style={styles.tarjetaHeader}>
-          <Text style={styles.tarjetaTitulo}>Gastos Registrados</Text>
-          <Text style={styles.tarjetaAccionNegativa}>+ Registrar gasto</Text>
-        </View>
-        <Text style={styles.montoLinea}>
-          COP: {formatearMontoMoneda(resumenPorMoneda.COP.gastos, "COP")}
-        </Text>
-        <Text style={styles.montoLinea}>
-          USD: {formatearMontoMoneda(resumenPorMoneda.USD.gastos, "USD")}
-        </Text>
-      </TouchableOpacity>
-
-      <Text style={styles.seccionTitulo}>
-        Movimientos manuales ({fechaEfectiva})
-      </Text>
-      <View style={styles.listaMovimientos}>
-        {movimientosDelDia.map((mov) => {
-          const m = inferirMonedaMovimiento(mov);
-          const esEntrada = mov.tipo === "efectivo_recibido";
-          return (
-            <View key={mov.id} style={styles.movItem}>
-              <View style={{ flex: 1, paddingRight: 8 }}>
-                <Text style={styles.movFecha}>{mov.fecha}</Text>
-                <Text style={styles.movDesc}>{mov.descripcion}</Text>
-              </View>
+        <View style={styles.contentWrapper}>
+          {aviso ? (
+            <View
+              style={[
+                styles.banner,
+                aviso.tipo === "exito"
+                  ? styles.bannerExito
+                  : styles.bannerError,
+              ]}
+            >
               <Text
                 style={[
-                  styles.movMonto,
-                  esEntrada ? styles.textoPositivo : styles.textoNegativo,
+                  styles.bannerTexto,
+                  aviso.tipo === "exito"
+                    ? styles.textoExito
+                    : styles.textoError,
                 ]}
               >
-                {esEntrada ? "+" : "-"}
-                {formatearMontoMoneda(mov.monto, m)}
+                {aviso.texto}
               </Text>
-              <TouchableOpacity
-                onPress={() => void eliminarMovimiento(mov.id)}
-                style={{ marginLeft: 10 }}
-              >
-                <Text style={styles.btnEliminar}>Eliminar</Text>
-              </TouchableOpacity>
             </View>
-          );
-        })}
-        {movimientosDelDia.length === 0 ? (
-          <Text style={styles.vacio}>
-            No hay movimientos manuales registrados en esta fecha.
+          ) : null}
+
+          <View style={styles.gridDos}>
+            <View style={styles.cardEntregar}>
+              <Text style={styles.entregarLabel}>
+                Restante por entregar (COP)
+              </Text>
+              <Text style={styles.entregarValor}>
+                {formatearMontoMoneda(
+                  resumenPorMoneda.COP.restantePorEntregar,
+                  "COP",
+                )}
+              </Text>
+              <Text style={styles.entregarSub}>
+                Cobrado + Recibido:{" "}
+                {formatearMontoMoneda(
+                  resumenPorMoneda.COP.dineroCobrado +
+                    resumenPorMoneda.COP.efectivoRecibido,
+                  "COP",
+                )}
+              </Text>
+            </View>
+
+            <View style={styles.cardEntregar}>
+              <Text style={styles.entregarLabel}>
+                Restante por entregar (USD)
+              </Text>
+              <Text style={styles.entregarValor}>
+                {formatearMontoMoneda(
+                  resumenPorMoneda.USD.restantePorEntregar,
+                  "USD",
+                )}
+              </Text>
+              <Text style={styles.entregarSub}>
+                Cobrado + Recibido:{" "}
+                {formatearMontoMoneda(
+                  resumenPorMoneda.USD.dineroCobrado +
+                    resumenPorMoneda.USD.efectivoRecibido,
+                  "USD",
+                )}
+              </Text>
+            </View>
+          </View>
+
+          <TouchableOpacity
+            style={[styles.tarjeta, styles.tarjetaEfectivo]}
+            onPress={() => abrirModal("efectivo_recibido")}
+          >
+            <View style={styles.tarjetaHeader}>
+              <Text style={styles.tarjetaTitulo}>
+                Efectivo Recibido del Jefe
+              </Text>
+              <Text style={styles.tarjetaAccion}>+ Registrar (toca aquí)</Text>
+            </View>
+            <Text style={styles.montoLinea}>
+              COP:{" "}
+              {formatearMontoMoneda(
+                resumenPorMoneda.COP.efectivoRecibido,
+                "COP",
+              )}
+            </Text>
+            <Text style={styles.montoLinea}>
+              USD:{" "}
+              {formatearMontoMoneda(
+                resumenPorMoneda.USD.efectivoRecibido,
+                "USD",
+              )}
+            </Text>
+          </TouchableOpacity>
+
+          <View style={styles.tarjeta}>
+            <View style={styles.tarjetaHeader}>
+              <Text style={styles.tarjetaTitulo}>
+                Dinero Cobrado a Clientes
+              </Text>
+              <Text style={styles.tarjetaBadgePositivo}>Entra a caja</Text>
+            </View>
+            <Text style={styles.montoLinea}>
+              COP:{" "}
+              {formatearMontoMoneda(resumenPorMoneda.COP.dineroCobrado, "COP")}
+            </Text>
+            <Text style={styles.montoLinea}>
+              USD:{" "}
+              {formatearMontoMoneda(resumenPorMoneda.USD.dineroCobrado, "USD")}
+            </Text>
+          </View>
+
+          <View style={styles.tarjeta}>
+            <View style={styles.tarjetaHeader}>
+              <Text style={styles.tarjetaTitulo}>Suma de Préstamos</Text>
+              <Text style={styles.tarjetaBadgeNegativo}>Sale de caja</Text>
+            </View>
+            <Text style={styles.montoLinea}>
+              COP:{" "}
+              {formatearMontoMoneda(resumenPorMoneda.COP.sumaPrestamos, "COP")}
+            </Text>
+            <Text style={styles.montoLinea}>
+              USD:{" "}
+              {formatearMontoMoneda(resumenPorMoneda.USD.sumaPrestamos, "USD")}
+            </Text>
+          </View>
+
+          <TouchableOpacity
+            style={styles.tarjeta}
+            onPress={() => abrirModal("gasto")}
+          >
+            <View style={styles.tarjetaHeader}>
+              <Text style={styles.tarjetaTitulo}>Gastos Registrados</Text>
+              <Text style={styles.tarjetaAccionNegativa}>
+                + Registrar gasto
+              </Text>
+            </View>
+            <Text style={styles.montoLinea}>
+              COP: {formatearMontoMoneda(resumenPorMoneda.COP.gastos, "COP")}
+            </Text>
+            <Text style={styles.montoLinea}>
+              USD: {formatearMontoMoneda(resumenPorMoneda.USD.gastos, "USD")}
+            </Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={styles.tarjeta}
+            onPress={() => abrirModal("efectivo_entregado")}
+          >
+            <View style={styles.tarjetaHeader}>
+              <Text style={styles.tarjetaTitulo}>Dinero Entregado al Jefe</Text>
+              <Text style={styles.tarjetaAccionNegativa}>
+                + Entregar / Sale de caja
+              </Text>
+            </View>
+            <Text style={styles.montoLinea}>
+              COP:{" "}
+              {formatearMontoMoneda(
+                resumenPorMoneda.COP.efectivoEntregado,
+                "COP",
+              )}{" "}
+              • Restante:{" "}
+              {formatearMontoMoneda(
+                resumenPorMoneda.COP.restantePorEntregar,
+                "COP",
+              )}
+            </Text>
+            <Text style={styles.montoLinea}>
+              USD:{" "}
+              {formatearMontoMoneda(
+                resumenPorMoneda.USD.efectivoEntregado,
+                "USD",
+              )}{" "}
+              • Restante:{" "}
+              {formatearMontoMoneda(
+                resumenPorMoneda.USD.restantePorEntregar,
+                "USD",
+              )}
+            </Text>
+          </TouchableOpacity>
+
+          <Text style={styles.seccionTitulo}>
+            Registro completo de movimientos ({movimientos.length})
           </Text>
-        ) : null}
-      </View>
+          <View style={styles.listaMovimientos}>
+            {movimientos.map((mov) => {
+              const m = inferirMonedaMovimiento(mov);
+              const esEntrada = mov.tipo === "efectivo_recibido";
+              return (
+                <View key={mov.id} style={styles.movItem}>
+                  <View style={{ flex: 1, paddingRight: 8 }}>
+                    <Text style={styles.movDesc}>{mov.descripcion}</Text>
+                    <Text style={styles.movFecha}>{mov.fecha}</Text>
+                  </View>
+                  <Text
+                    style={[
+                      styles.movMonto,
+                      esEntrada ? styles.textoPositivo : styles.textoNegativo,
+                    ]}
+                  >
+                    {esEntrada ? "+" : "-"}
+                    {formatearMontoMoneda(mov.monto, m)}
+                  </Text>
+                  <TouchableOpacity
+                    onPress={() => void eliminarMovimiento(mov.id)}
+                    style={{ marginLeft: 10 }}
+                  >
+                    <Text style={styles.btnEliminar}>Eliminar</Text>
+                  </TouchableOpacity>
+                </View>
+              );
+            })}
+            {movimientos.length === 0 ? (
+              <Text style={styles.vacio}>
+                No hay movimientos manuales registrados.
+              </Text>
+            ) : null}
+          </View>
+        </View>
+      </ScrollView>
 
       <Modal
         visible={tipoModal !== null}
@@ -547,101 +618,143 @@ export default function CajaBancosScreen() {
       >
         <View style={styles.modalOverlay}>
           <View style={styles.modalCard}>
-            <Text style={styles.modalTitulo}>{tituloModal}</Text>
+            <ScrollView
+              showsVerticalScrollIndicator={false}
+              keyboardShouldPersistTaps="handled"
+            >
+              <Text style={styles.modalTitulo}>{tituloModal}</Text>
 
-            <Text style={styles.modalLabel}>Moneda:</Text>
-            <View style={styles.monedaRow}>
-              {(["COP", "USD"] as const).map((m) => (
-                <TouchableOpacity
-                  key={m}
-                  style={[
-                    styles.monedaChip,
-                    monedaModal === m && styles.monedaChipActivo,
-                  ]}
-                  onPress={() => handleMonedaModalChange(m)}
-                >
-                  <Text
-                    style={[
-                      styles.monedaChipTexto,
-                      monedaModal === m && styles.textoBlanco,
-                    ]}
-                  >
-                    {m === "COP" ? "Pesos (COP)" : "Dólares (USD)"}
+              {tipoModal === "efectivo_entregado" ? (
+                <View style={styles.resumenEntregaBox}>
+                  <Text style={styles.resumenEntregaTexto}>
+                    Restante por entregar — COP:{" "}
+                    {formatearMontoMoneda(
+                      resumenPorMoneda.COP.restantePorEntregar,
+                      "COP",
+                    )}
                   </Text>
-                </TouchableOpacity>
-              ))}
-            </View>
+                  <Text style={styles.resumenEntregaTexto}>
+                    Restante por entregar — USD:{" "}
+                    {formatearMontoMoneda(
+                      resumenPorMoneda.USD.restantePorEntregar,
+                      "USD",
+                    )}
+                  </Text>
+                </View>
+              ) : null}
 
-            <Text style={styles.modalLabel}>
-              Monto ({monedaModal === "USD" ? "US$" : "$"}):
-            </Text>
-            <TextInput
-              style={styles.input}
-              keyboardType={
-                monedaModal === "USD" ? "decimal-pad" : "number-pad"
-              }
-              value={montoModal}
-              onChangeText={(t) =>
-                setMontoModal(formatearInputPorMoneda(t, monedaModal))
-              }
-              placeholder={monedaModal === "USD" ? "Ej: 100" : "Ej: 500.000"}
-            />
-
-            <Text style={styles.modalLabel}>Fecha manual (YYYY-MM-DD):</Text>
-            <TextInput
-              style={styles.input}
-              value={fechaModal}
-              onChangeText={setFechaModal}
-              placeholder="YYYY-MM-DD"
-              maxLength={10}
-            />
-
-            <Text style={styles.modalLabel}>Descripción:</Text>
-            <TextInput
-              style={styles.input}
-              value={descripcionModal}
-              onChangeText={setDescripcionModal}
-              placeholder="Detalle del movimiento..."
-            />
-
-            {errorModal ? (
-              <View style={[styles.banner, styles.bannerError]}>
-                <Text style={[styles.bannerTexto, styles.textoError]}>
-                  {errorModal}
-                </Text>
+              <Text style={styles.modalLabel}>Moneda:</Text>
+              <View style={styles.monedaRow}>
+                {(["COP", "USD"] as const).map((m) => (
+                  <TouchableOpacity
+                    key={m}
+                    style={[
+                      styles.monedaChip,
+                      monedaModal === m && styles.monedaChipActivo,
+                    ]}
+                    onPress={() => handleMonedaModalChange(m)}
+                  >
+                    <Text
+                      style={[
+                        styles.monedaChipTexto,
+                        monedaModal === m && styles.textoBlanco,
+                      ]}
+                    >
+                      {m === "COP" ? "Pesos (COP)" : "Dólares (USD)"}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
               </View>
-            ) : null}
 
-            <View style={styles.modalActions}>
-              <TouchableOpacity
-                style={styles.btnCancelar}
-                onPress={cerrarModal}
-              >
-                <Text style={styles.btnCancelarTexto}>Cancelar</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={styles.btnGuardar}
-                onPress={() => void guardarMovimientoModal()}
-              >
-                <Text style={styles.btnGuardarTexto}>Guardar</Text>
-              </TouchableOpacity>
-            </View>
+              <Text style={styles.modalLabel}>
+                Monto ({monedaModal === "USD" ? "US$" : "$"}):
+              </Text>
+              <TextInput
+                style={styles.input}
+                keyboardType={
+                  monedaModal === "USD" ? "decimal-pad" : "number-pad"
+                }
+                value={montoModal}
+                onChangeText={(t) =>
+                  setMontoModal(formatearInputPorMoneda(t, monedaModal))
+                }
+                placeholder={monedaModal === "USD" ? "Ej: 100" : "Ej: 500.000"}
+              />
+
+              <Text style={styles.modalLabel}>Fecha manual (YYYY-MM-DD):</Text>
+              <TextInput
+                style={styles.input}
+                value={fechaModal}
+                onChangeText={setFechaModal}
+                placeholder="YYYY-MM-DD"
+                maxLength={10}
+              />
+
+              <Text style={styles.modalLabel}>Descripción:</Text>
+              <TextInput
+                style={styles.input}
+                value={descripcionModal}
+                onChangeText={setDescripcionModal}
+                placeholder="Detalle del movimiento..."
+              />
+
+              {errorModal ? (
+                <View style={[styles.banner, styles.bannerError]}>
+                  <Text style={[styles.bannerTexto, styles.textoError]}>
+                    {errorModal}
+                  </Text>
+                </View>
+              ) : null}
+
+              <View style={styles.modalActions}>
+                <TouchableOpacity
+                  style={styles.btnCancelar}
+                  onPress={cerrarModal}
+                >
+                  <Text style={styles.btnCancelarTexto}>Cancelar</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.btnGuardar}
+                  onPress={() => void guardarMovimientoModal()}
+                >
+                  <Text style={styles.btnGuardarTexto}>Guardar</Text>
+                </TouchableOpacity>
+              </View>
+            </ScrollView>
           </View>
         </View>
       </Modal>
-    </ScrollView>
+    </KeyboardAvoidingView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, padding: 16, backgroundColor: "#F8FAFC" },
+  keyboardWrapper: {
+    flex: 1,
+    backgroundColor: "#F8FAFC",
+  },
+  container: {
+    flex: 1,
+    backgroundColor: "#F8FAFC",
+  },
+  scrollContent: {
+    padding: 16,
+    paddingBottom: 140,
+  },
+  contentWrapper: {
+    width: "100%",
+    maxWidth: 820,
+    alignSelf: "center",
+  },
   gridDos: {
     flexDirection: "row",
+    flexWrap: "wrap",
     gap: 10,
     marginBottom: 12,
   },
   cardEntregar: {
     flex: 1,
+    minWidth: 200,
     backgroundColor: "#0F172A",
     padding: 14,
     borderRadius: 10,
@@ -650,17 +763,20 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: "#94A3B8",
     fontWeight: "600",
+    flexShrink: 1,
   },
   entregarValor: {
     fontSize: 18,
     color: "#fff",
     fontWeight: "bold",
     marginTop: 4,
+    flexShrink: 1,
   },
   entregarSub: {
     fontSize: 11,
     color: "#CBD5E1",
     marginTop: 4,
+    flexShrink: 1,
   },
   tarjeta: {
     backgroundColor: "#fff",
@@ -678,12 +794,15 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
+    flexWrap: "wrap",
+    gap: 6,
     marginBottom: 6,
   },
   tarjetaTitulo: {
     fontSize: 15,
     fontWeight: "700",
     color: "#0F172A",
+    flexShrink: 1,
   },
   tarjetaAccion: {
     fontSize: 12,
@@ -718,6 +837,7 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     color: "#1E293B",
     marginTop: 2,
+    flexShrink: 1,
   },
   seccionTitulo: {
     fontSize: 14,
@@ -725,6 +845,7 @@ const styles = StyleSheet.create({
     color: "#334155",
     marginTop: 8,
     marginBottom: 8,
+    flexShrink: 1,
   },
   listaMovimientos: { gap: 8, paddingBottom: 28 },
   movItem: {
@@ -736,8 +857,13 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "#E2E8F0",
   },
-  movFecha: { fontSize: 12, fontWeight: "700", color: "#64748B" },
-  movDesc: { fontSize: 14, fontWeight: "600", color: "#0F172A", marginTop: 2 },
+  movFecha: { fontSize: 12, color: "#64748B", marginTop: 2 },
+  movDesc: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: "#0F172A",
+    flexShrink: 1,
+  },
   movMonto: { fontSize: 14, fontWeight: "700" },
   textoPositivo: { color: "#16A34A" },
   textoNegativo: { color: "#DC2626" },
@@ -764,7 +890,8 @@ const styles = StyleSheet.create({
   },
   modalCard: {
     width: "100%",
-    maxWidth: 440,
+    maxWidth: 460,
+    maxHeight: "90%",
     backgroundColor: "#fff",
     borderRadius: 12,
     padding: 20,
@@ -781,6 +908,18 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     color: "#334155",
     marginTop: 10,
+  },
+  resumenEntregaBox: {
+    backgroundColor: "#F1F5F9",
+    padding: 10,
+    borderRadius: 8,
+    marginTop: 6,
+    gap: 3,
+  },
+  resumenEntregaTexto: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#0F172A",
   },
   input: {
     backgroundColor: "#fff",

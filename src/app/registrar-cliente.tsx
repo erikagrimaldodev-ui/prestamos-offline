@@ -4,7 +4,7 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
-  FlatList,
+  ScrollView,
   Modal,
   StyleSheet,
   KeyboardAvoidingView,
@@ -200,109 +200,123 @@ export default function RegistroClientesScreen() {
 
   return (
     <KeyboardAvoidingView
-      style={styles.container}
-      behavior={Platform.OS === "ios" ? "padding" : undefined}
+      style={styles.keyboardWrapper}
+      behavior={Platform.OS === "ios" ? "padding" : "height"}
     >
-      <View style={styles.formCard}>
-        <Text style={styles.titulo}>
-          {editandoId !== null ? "Editar Cliente" : "Registrar Nuevo Cliente"}
-        </Text>
-
-        <Text style={styles.label}>Nombre y Apellido *</Text>
-        <TextInput
-          style={styles.input}
-          placeholder="Ej: Carlos Pérez"
-          value={nombre}
-          onChangeText={setNombre}
-        />
-
-        <Text style={styles.label}>Teléfono (solo números) *</Text>
-        <TextInput
-          style={styles.input}
-          placeholder="Ej: 04141234567"
-          keyboardType="phone-pad"
-          maxLength={12}
-          value={telefono}
-          onChangeText={handleTelefonoChange}
-        />
-
-        <Text style={styles.label}>Dirección</Text>
-        <TextInput
-          style={styles.input}
-          placeholder="Sector, calle o referencia"
-          value={direccion}
-          onChangeText={setDireccion}
-        />
-
-        <TouchableOpacity style={styles.btnGuardar} onPress={guardarCliente}>
-          <Text style={styles.btnTexto}>
-            {editandoId !== null ? "Guardar Cambios" : "Guardar Cliente"}
-          </Text>
-        </TouchableOpacity>
-
-        {editandoId !== null ? (
-          <TouchableOpacity
-            style={styles.btnCancelarEdicion}
-            onPress={limpiarFormulario}
-          >
-            <Text style={styles.btnCancelarTexto}>Cancelar edición</Text>
-          </TouchableOpacity>
-        ) : null}
-
-        {mensaje ? (
-          <Text
-            style={[
-              styles.mensajeTexto,
-              { color: mensaje.tipo === "exito" ? "#16A34A" : "#DC2626" },
-            ]}
-          >
-            {mensaje.texto}
-          </Text>
-        ) : null}
-      </View>
-
-      <Text style={styles.subtitulo}>
-        Clientes registrados ({clientes.length})
-      </Text>
-
-      <FlatList
-        data={clientes}
-        keyExtractor={(item) => item.id.toString()}
-        contentContainerStyle={{ paddingBottom: 24 }}
-        renderItem={({ item }) => (
-          <TouchableOpacity
-            style={[
-              styles.clienteCard,
-              editandoId === item.id && styles.clienteCardEditando,
-            ]}
-            onPress={() => iniciarEdicion(item)}
-          >
-            <View style={styles.cardHeader}>
-              <Text style={styles.clienteNombre}>{item.nombre}</Text>
-              <View style={styles.accionesRow}>
-                <TouchableOpacity
-                  onPress={() => iniciarEdicion(item)}
-                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                >
-                  <Text style={styles.accionEditar}>Editar</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  onPress={() => solicitarEliminarCliente(item)}
-                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                >
-                  <Text style={styles.accionEliminar}>Eliminar</Text>
-                </TouchableOpacity>
-              </View>
-            </View>
-            <Text style={styles.clienteDato}>
-              Tel: {item.telefono || "N/A"}
+      <ScrollView
+        style={styles.container}
+        contentContainerStyle={styles.scrollContent}
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator
+      >
+        <View style={styles.contentWrapper}>
+          <View style={styles.formCard}>
+            <Text style={styles.titulo}>
+              {editandoId !== null
+                ? "Editar Cliente"
+                : "Registrar Nuevo Cliente"}
             </Text>
-            {item.direccion ? (
-              <Text style={styles.clienteDireccion}>{item.direccion}</Text>
+
+            <Text style={styles.label}>Nombre y Apellido *</Text>
+            <TextInput
+              style={styles.input}
+              placeholder="Ej: Carlos Pérez"
+              value={nombre}
+              onChangeText={setNombre}
+            />
+
+            <Text style={styles.label}>Teléfono (solo números) *</Text>
+            <TextInput
+              style={styles.input}
+              placeholder="Ej: 04141234567"
+              keyboardType="phone-pad"
+              maxLength={12}
+              value={telefono}
+              onChangeText={handleTelefonoChange}
+            />
+
+            <Text style={styles.label}>Dirección</Text>
+            <TextInput
+              style={styles.input}
+              placeholder="Sector, calle o referencia"
+              value={direccion}
+              onChangeText={setDireccion}
+            />
+
+            <TouchableOpacity
+              style={styles.btnGuardar}
+              onPress={guardarCliente}
+            >
+              <Text style={styles.btnTexto}>
+                {editandoId !== null ? "Guardar Cambios" : "Guardar Cliente"}
+              </Text>
+            </TouchableOpacity>
+
+            {editandoId !== null ? (
+              <TouchableOpacity
+                style={styles.btnCancelarEdicion}
+                onPress={limpiarFormulario}
+              >
+                <Text style={styles.btnCancelarTexto}>Cancelar edición</Text>
+              </TouchableOpacity>
             ) : null}
-          </TouchableOpacity>
-        )}
-      />
+
+            {mensaje ? (
+              <Text
+                style={[
+                  styles.mensajeTexto,
+                  {
+                    color: mensaje.tipo === "exito" ? "#16A34A" : "#DC2626",
+                  },
+                ]}
+              >
+                {mensaje.texto}
+              </Text>
+            ) : null}
+          </View>
+
+          <Text style={styles.subtitulo}>
+            Clientes registrados ({clientes.length})
+          </Text>
+
+          <View style={styles.listaClientes}>
+            {clientes.map((item) => (
+              <TouchableOpacity
+                key={item.id}
+                style={[
+                  styles.clienteCard,
+                  editandoId === item.id && styles.clienteCardEditando,
+                ]}
+                onPress={() => iniciarEdicion(item)}
+              >
+                <View style={styles.cardHeader}>
+                  <Text style={styles.clienteNombre}>{item.nombre}</Text>
+                  <View style={styles.accionesRow}>
+                    <TouchableOpacity
+                      onPress={() => iniciarEdicion(item)}
+                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                    >
+                      <Text style={styles.accionEditar}>Editar</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      onPress={() => solicitarEliminarCliente(item)}
+                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                    >
+                      <Text style={styles.accionEliminar}>Eliminar</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+                <Text style={styles.clienteDato}>
+                  Tel: {item.telefono || "N/A"}
+                </Text>
+                {item.direccion ? (
+                  <Text style={styles.clienteDireccion}>{item.direccion}</Text>
+                ) : null}
+              </TouchableOpacity>
+            ))}
+          </View>
+        </View>
+      </ScrollView>
 
       <Modal
         visible={clienteAEliminar !== null}
@@ -342,7 +356,23 @@ export default function RegistroClientesScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, padding: 16, backgroundColor: "#F8FAFC" },
+  keyboardWrapper: {
+    flex: 1,
+    backgroundColor: "#F8FAFC",
+  },
+  container: {
+    flex: 1,
+    backgroundColor: "#F8FAFC",
+  },
+  scrollContent: {
+    padding: 16,
+    paddingBottom: 140,
+  },
+  contentWrapper: {
+    width: "100%",
+    maxWidth: 760,
+    alignSelf: "center",
+  },
   formCard: {
     backgroundColor: "#fff",
     padding: 16,
@@ -355,8 +385,15 @@ const styles = StyleSheet.create({
     fontWeight: "bold",
     color: "#0F172A",
     marginBottom: 6,
+    flexShrink: 1,
   },
-  label: { fontSize: 13, fontWeight: "600", color: "#334155", marginTop: 10 },
+  label: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: "#334155",
+    marginTop: 10,
+    flexShrink: 1,
+  },
   input: {
     backgroundColor: "#F8FAFC",
     borderWidth: 1,
@@ -373,45 +410,90 @@ const styles = StyleSheet.create({
     alignItems: "center",
     marginTop: 14,
   },
-  btnTexto: { color: "#fff", fontWeight: "bold", fontSize: 15 },
+  btnTexto: {
+    color: "#fff",
+    fontWeight: "bold",
+    fontSize: 15,
+    flexShrink: 1,
+  },
   btnCancelarEdicion: { padding: 10, alignItems: "center", marginTop: 6 },
-  btnCancelarTexto: { color: "#64748B", fontSize: 13, fontWeight: "600" },
+  btnCancelarTexto: {
+    color: "#64748B",
+    fontSize: 13,
+    fontWeight: "600",
+    flexShrink: 1,
+  },
   mensajeTexto: {
     marginTop: 10,
     fontSize: 13,
     fontWeight: "600",
     textAlign: "center",
+    flexShrink: 1,
   },
   subtitulo: {
     fontSize: 15,
     fontWeight: "bold",
     color: "#1E293B",
     marginBottom: 8,
+    flexShrink: 1,
+  },
+  listaClientes: {
+    gap: 8,
   },
   clienteCard: {
     backgroundColor: "#fff",
     padding: 12,
     borderRadius: 8,
-    marginBottom: 8,
     borderWidth: 1,
     borderColor: "#E2E8F0",
   },
-  clienteCardEditando: { borderColor: "#0F172A", backgroundColor: "#F1F5F9" },
+  clienteCardEditando: {
+    borderColor: "#0F172A",
+    backgroundColor: "#F1F5F9",
+  },
   cardHeader: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
+    gap: 10,
   },
   accionesRow: {
     flexDirection: "row",
     alignItems: "center",
     gap: 12,
+    flexShrink: 0,
   },
-  clienteNombre: { fontSize: 15, fontWeight: "bold", color: "#0F172A" },
-  accionEditar: { fontSize: 13, fontWeight: "600", color: "#1E3A8A" },
-  accionEliminar: { fontSize: 13, fontWeight: "600", color: "#DC2626" },
-  clienteDato: { fontSize: 13, color: "#475569", marginTop: 2 },
-  clienteDireccion: { fontSize: 12, color: "#64748B", marginTop: 2 },
+  clienteNombre: {
+    fontSize: 15,
+    fontWeight: "bold",
+    color: "#0F172A",
+    flex: 1,
+    flexShrink: 1,
+  },
+  accionEditar: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: "#1E3A8A",
+    flexShrink: 1,
+  },
+  accionEliminar: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: "#DC2626",
+    flexShrink: 1,
+  },
+  clienteDato: {
+    fontSize: 13,
+    color: "#475569",
+    marginTop: 2,
+    flexShrink: 1,
+  },
+  clienteDireccion: {
+    fontSize: 12,
+    color: "#64748B",
+    marginTop: 2,
+    flexShrink: 1,
+  },
   modalOverlay: {
     flex: 1,
     backgroundColor: "rgba(15, 23, 42, 0.55)",
@@ -432,12 +514,14 @@ const styles = StyleSheet.create({
     fontWeight: "bold",
     color: "#0F172A",
     marginBottom: 8,
+    flexShrink: 1,
   },
   modalTexto: {
     fontSize: 14,
     color: "#475569",
     lineHeight: 20,
     marginBottom: 18,
+    flexShrink: 1,
   },
   modalBotones: {
     gap: 10,
