@@ -57,6 +57,11 @@ type ObjetivoEliminar =
   | { kind: "pago"; item: PagoHistorial }
   | null;
 
+type ObjetivoEditar =
+  | { kind: "prestamo"; item: PrestamoHistorial }
+  | { kind: "pago"; item: PagoHistorial }
+  | null;
+
 const normalizarMoneda = (moneda?: string | null): MonedaRegistro => {
   return (moneda || "").trim().toUpperCase() === "USD" ? "USD" : "COP";
 };
@@ -136,6 +141,22 @@ const formatearMontoRegistrado = (
   return `$ ${formatearMilesEntero(valor)}`;
 };
 
+const parsearNumeroInput = (texto: string): number => {
+  const limpio = texto.trim().replace(/\s+/g, "").replace(",", ".");
+  return Number(limpio);
+};
+
+const redondearMontoPorMoneda = (
+  valor: number,
+  moneda?: string | null,
+): number => {
+  const seguro = Number.isNaN(valor) ? 0 : valor;
+  if (normalizarMoneda(moneda) === "USD") {
+    return Math.round(seguro * 100) / 100;
+  }
+  return Math.round(seguro);
+};
+
 export default function HistorialScreen() {
   const [tab, setTab] = useState<"prestamos" | "pagos">("prestamos");
   const [filtroEstado, setFiltroEstado] = useState<
@@ -149,6 +170,11 @@ export default function HistorialScreen() {
   const [pagos, setPagos] = useState<PagoHistorial[]>([]);
   const [objetivoEliminar, setObjetivoEliminar] =
     useState<ObjetivoEliminar>(null);
+  const [objetivoEditar, setObjetivoEditar] = useState<ObjetivoEditar>(null);
+  const [campoMonto, setCampoMonto] = useState("");
+  const [campoInteres, setCampoInteres] = useState("");
+  const [errorEdicion, setErrorEdicion] = useState("");
+  const [guardandoEdicion, setGuardandoEdicion] = useState(false);
   const [aviso, setAviso] = useState("");
 
   const toggleMoneda = (moneda: MonedaRegistro) => {
@@ -269,6 +295,159 @@ export default function HistorialScreen() {
     });
   }, [pagos, busqueda, filtroMoneda]);
 
+  const abrirModalEditarPrestamo = (item: PrestamoHistorial) => {
+    setErrorEdicion("");
+    setCampoMonto(String(item.monto_prestado ?? 0));
+    setCampoInteres(String(item.interes_porcentaje ?? 0));
+    setObjetivoEditar({ kind: "prestamo", item });
+  };
+
+  const abrirModalEditarPago = (item: PagoHistorial) => {
+    setErrorEdicion("");
+    setCampoMonto(String(item.monto_pagado ?? 0));
+    setCampoInteres("");
+    setObjetivoEditar({ kind: "pago", item });
+  };
+
+  const cerrarModalEditar = () => {
+    if (guardandoEdicion) return;
+    setObjetivoEditar(null);
+    setErrorEdicion("");
+  };
+
+  const guardarEdicion = async () => {
+    if (!objetivoEditar || guardandoEdicion) return;
+    setErrorEdicion("");
+    setAviso("");
+
+    if (objetivoEditar.kind === "prestamo") {
+      const prestamo = objetivoEditar.item;
+      const nuevoMontoPrestado = parsearNumeroInput(campoMonto);
+      const nuevoInteres = parsearNumeroInput(campoInteres);
+
+      if (Number.isNaN(nuevoMontoPrestado) || nuevoMontoPrestado <= 0) {
+        setErrorEdicion("Ingresa un monto prestado mayor a 0.");
+        return;
+      }
+      if (Number.isNaN(nuevoInteres) || nuevoInteres < 0) {
+        setErrorEdicion("Ingresa un porcentaje de interés válido (0 o mayor).");
+        return;
+      }
+
+      setGuardandoEdicion(true);
+      try {
+        const nuevoTotalBruto = nuevoMontoPrestado * (1 + nuevoInteres / 100);
+        const nuevoMontoTotal = redondearMontoPorMoneda(
+          nuevoTotalBruto,
+          prestamo.moneda,
+        );
+
+        const totalPagadoRow = await getFirstRow<{
+          total_pagado: number | null;
+        }>(
+          "SELECT COALESCE(SUM(monto_pagado), 0) AS total_pagado FROM pagos WHERE prestamo_id = ?",
+          [prestamo.id],
+        );
+        const totalPagado = Number(totalPagadoRow?.total_pagado ?? 0);
+        const nuevoSaldo = redondearMontoPorMoneda(
+          Math.max(0, nuevoMontoTotal - totalPagado),
+          prestamo.moneda,
+        );
+
+        const estadoActual = (prestamo.estado || "").trim().toLowerCase();
+        let nuevoEstado = prestamo.estado;
+        if (estadoActual !== "renovado") {
+          nuevoEstado = nuevoSaldo <= 0 ? "pagado" : "activo";
+        }
+
+        await runQuery(
+          `UPDATE prestamos
+           SET monto_prestado = ?, interes_porcentaje = ?, monto_total = ?, saldo_pendiente = ?, estado = ?
+           WHERE id = ?`,
+          [
+            nuevoMontoPrestado,
+            nuevoInteres,
+            nuevoMontoTotal,
+            nuevoSaldo,
+            nuevoEstado,
+            prestamo.id,
+          ],
+        );
+
+        setObjetivoEditar(null);
+        await cargarHistorial();
+      } catch (e: any) {
+        setErrorEdicion(
+          `Error al guardar préstamo: ${e?.message || "error en base de datos"}`,
+        );
+      } finally {
+        setGuardandoEdicion(false);
+      }
+      return;
+    }
+
+    const pago = objetivoEditar.item;
+    const nuevoMontoPagado = parsearNumeroInput(campoMonto);
+    if (Number.isNaN(nuevoMontoPagado) || nuevoMontoPagado <= 0) {
+      setErrorEdicion("Ingresa un monto de pago mayor a 0.");
+      return;
+    }
+
+    setGuardandoEdicion(true);
+    try {
+      const diferencia = nuevoMontoPagado - Number(pago.monto_pagado ?? 0);
+
+      await runQuery("UPDATE pagos SET monto_pagado = ? WHERE id = ?", [
+        nuevoMontoPagado,
+        pago.id,
+      ]);
+
+      const prestamoActual = await getFirstRow<{
+        id: number;
+        monto_total: number;
+        saldo_pendiente: number;
+        estado: string;
+        moneda?: string | null;
+      }>(
+        "SELECT id, monto_total, saldo_pendiente, estado, moneda FROM prestamos WHERE id = ?",
+        [pago.prestamo_id],
+      );
+
+      if (prestamoActual) {
+        const saldoCalculado =
+          Number(prestamoActual.saldo_pendiente) - diferencia;
+        const nuevoSaldo = redondearMontoPorMoneda(
+          Math.min(
+            Number(prestamoActual.monto_total),
+            Math.max(0, saldoCalculado),
+          ),
+          prestamoActual.moneda ?? pago.moneda,
+        );
+        const estadoActual = (prestamoActual.estado || "").trim().toLowerCase();
+        const nuevoEstado =
+          estadoActual === "renovado"
+            ? prestamoActual.estado
+            : nuevoSaldo <= 0
+              ? "pagado"
+              : "activo";
+
+        await runQuery(
+          "UPDATE prestamos SET saldo_pendiente = ?, estado = ? WHERE id = ?",
+          [nuevoSaldo, nuevoEstado, prestamoActual.id],
+        );
+      }
+
+      setObjetivoEditar(null);
+      await cargarHistorial();
+    } catch (e: any) {
+      setErrorEdicion(
+        `Error al guardar pago: ${e?.message || "error en base de datos"}`,
+      );
+    } finally {
+      setGuardandoEdicion(false);
+    }
+  };
+
   const confirmarEliminacion = async () => {
     if (!objetivoEliminar) return;
     setAviso("");
@@ -313,6 +492,24 @@ export default function HistorialScreen() {
       setAviso(`Error al eliminar: ${e?.message || "error en base de datos"}`);
     }
   };
+
+  const vistaPreviaPrestamo = useMemo(() => {
+    if (!objetivoEditar || objetivoEditar.kind !== "prestamo") return null;
+    const monto = parsearNumeroInput(campoMonto);
+    const interes = parsearNumeroInput(campoInteres);
+    if (
+      Number.isNaN(monto) ||
+      monto <= 0 ||
+      Number.isNaN(interes) ||
+      interes < 0
+    ) {
+      return null;
+    }
+    return redondearMontoPorMoneda(
+      monto * (1 + interes / 100),
+      objetivoEditar.item.moneda,
+    );
+  }, [objetivoEditar, campoMonto, campoInteres]);
 
   return (
     <View style={styles.container}>
@@ -480,14 +677,6 @@ export default function HistorialScreen() {
                   <Text style={styles.nombre}>
                     {item.cliente_nombre} (#{item.id})
                   </Text>
-                  <TouchableOpacity
-                    onPress={() =>
-                      setObjetivoEliminar({ kind: "prestamo", item })
-                    }
-                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                  >
-                    <Text style={styles.btnEliminar}>Eliminar</Text>
-                  </TouchableOpacity>
                 </View>
                 {textoRenovacion ? (
                   <Text style={styles.renovacionDetalle}>
@@ -509,6 +698,23 @@ export default function HistorialScreen() {
                   {formatearMontoRegistrado(item.saldo_pendiente, monedaReg)} •{" "}
                   {item.estado.toUpperCase()} ({monedaReg})
                 </Text>
+                <Text style={styles.saldo}></Text>
+                <View style={styles.accionesRow}>
+                  <TouchableOpacity
+                    onPress={() => abrirModalEditarPrestamo(item)}
+                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                  >
+                    <Text style={styles.btnEditar}>Editar</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    onPress={() =>
+                      setObjetivoEliminar({ kind: "prestamo", item })
+                    }
+                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                  >
+                    <Text style={styles.btnEliminar}>Eliminar</Text>
+                  </TouchableOpacity>
+                </View>
               </View>
             );
           }}
@@ -530,6 +736,41 @@ export default function HistorialScreen() {
                   <Text style={styles.nombre}>
                     {item.cliente_nombre} (#{item.prestamo_id})
                   </Text>
+                </View>
+
+                <Text style={styles.pagoMonto}>
+                  Pagado:{" "}
+                  {formatearMontoRegistrado(item.monto_pagado, monedaReg)}{" "}
+                  {monedaReg}
+                </Text>
+                <Text style={styles.detalle}>
+                  Fecha pago: {item.fecha_pago} • Interés: {interesMostrar}%
+                </Text>
+                <Text style={styles.detallePrestamo}>
+                  Monto del Préstamo:{" "}
+                  {formatearMontoRegistrado(item.monto_prestado, monedaReg)}
+                </Text>
+                <Text style={styles.detallePrestamo}>
+                  Monto Total{" "}
+                  {formatearMontoRegistrado(item.monto_total, monedaReg)}
+                </Text>
+                <Text style={styles.detallePrestamo}>
+                  Fecha del prestamo: {item.fecha_prestamo || "N/A"}
+                </Text>
+                <Text style={styles.detallePrestamo}>
+                  Próximo pago: {proximoPago}
+                </Text>
+                <Text style={styles.detallePrestamo}>
+                  Saldo pendiente:{" "}
+                  {formatearMontoRegistrado(item.saldo_pendiente, monedaReg)}
+                </Text>
+                <View style={styles.accionesRow}>
+                  <TouchableOpacity
+                    onPress={() => abrirModalEditarPago(item)}
+                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                  >
+                    <Text style={styles.btnEditar}>Editar</Text>
+                  </TouchableOpacity>
                   <TouchableOpacity
                     onPress={() => setObjetivoEliminar({ kind: "pago", item })}
                     hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
@@ -537,33 +778,102 @@ export default function HistorialScreen() {
                     <Text style={styles.btnEliminar}>Eliminar</Text>
                   </TouchableOpacity>
                 </View>
-                <Text style={styles.pagoMonto}>
-                  Pagado:{" "}
-                  {formatearMontoRegistrado(item.monto_pagado, monedaReg)}
-                </Text>
-                <Text style={styles.detalle}>
-                  Fecha pago: {item.fecha_pago} • Moneda: {monedaReg} • Interés:{" "}
-                  {interesMostrar}%
-                </Text>
-                <Text style={styles.detallePrestamo}>
-                  Monto del Préstamo:{" "}
-                  {formatearMontoRegistrado(item.monto_prestado, monedaReg)} |
-                  Monto Total{" "}
-                  {formatearMontoRegistrado(item.monto_total, monedaReg)}
-                </Text>
-                <Text style={styles.detallePrestamo}>
-                  Fecha del prestamo: {item.fecha_prestamo || "N/A"} | Próximo
-                  pago: {proximoPago}
-                </Text>
-                <Text style={styles.detallePrestamo}>
-                  Saldo pendiente:{" "}
-                  {formatearMontoRegistrado(item.saldo_pendiente, monedaReg)}
-                </Text>
               </View>
             );
           }}
         />
       )}
+
+      <Modal
+        visible={objetivoEditar !== null}
+        transparent
+        animationType="fade"
+        onRequestClose={cerrarModalEditar}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitulo}>
+              {objetivoEditar?.kind === "prestamo"
+                ? `Editar préstamo #${objetivoEditar.item.id}`
+                : objetivoEditar?.kind === "pago"
+                  ? `Editar pago #${objetivoEditar.item.id}`
+                  : ""}
+            </Text>
+            {objetivoEditar ? (
+              <Text style={styles.modalSubtitulo}>
+                Cliente: {objetivoEditar.item.cliente_nombre} • Moneda:{" "}
+                {normalizarMoneda(objetivoEditar.item.moneda)}
+              </Text>
+            ) : null}
+
+            {objetivoEditar?.kind === "prestamo" ? (
+              <>
+                <Text style={styles.inputLabel}>Monto prestado</Text>
+                <TextInput
+                  style={styles.inputModal}
+                  value={campoMonto}
+                  onChangeText={setCampoMonto}
+                  keyboardType="decimal-pad"
+                  placeholder="Ej. 500000"
+                />
+
+                <Text style={styles.inputLabel}>Porcentaje de interés (%)</Text>
+                <TextInput
+                  style={styles.inputModal}
+                  value={campoInteres}
+                  onChangeText={setCampoInteres}
+                  keyboardType="decimal-pad"
+                  placeholder="Ej. 20"
+                />
+
+                {vistaPreviaPrestamo !== null ? (
+                  <Text style={styles.vistaPrevia}>
+                    Nuevo monto total estimado:{" "}
+                    {formatearMontoRegistrado(
+                      vistaPreviaPrestamo,
+                      objetivoEditar.item.moneda,
+                    )}
+                  </Text>
+                ) : null}
+              </>
+            ) : objetivoEditar?.kind === "pago" ? (
+              <>
+                <Text style={styles.inputLabel}>Monto del pago</Text>
+                <TextInput
+                  style={styles.inputModal}
+                  value={campoMonto}
+                  onChangeText={setCampoMonto}
+                  keyboardType="decimal-pad"
+                  placeholder="Ej. 50000"
+                />
+              </>
+            ) : null}
+
+            {errorEdicion ? (
+              <Text style={styles.errorModal}>{errorEdicion}</Text>
+            ) : null}
+
+            <View style={styles.modalBotones}>
+              <TouchableOpacity
+                style={styles.btnModalCancelar}
+                onPress={cerrarModalEditar}
+                disabled={guardandoEdicion}
+              >
+                <Text style={styles.btnModalCancelarTexto}>Cancelar</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.btnModalGuardar}
+                onPress={guardarEdicion}
+                disabled={guardandoEdicion}
+              >
+                <Text style={styles.btnModalConfirmarTexto}>
+                  {guardandoEdicion ? "Guardando..." : "Guardar cambios"}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
 
       <Modal
         visible={objetivoEliminar !== null}
@@ -709,9 +1019,15 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     alignItems: "center",
   },
+  accionesRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 14,
+  },
   nombre: { fontSize: 16, fontWeight: "bold", color: "#0F172A" },
-  btnEliminar: { fontSize: 13, fontWeight: "700", color: "#DC2626" },
-  fecha: { fontSize: 12, fontWeight: "600", color: "#475569", marginTop: 2 },
+  btnEditar: { fontSize: 14, fontWeight: "700", color: "#1D4ED8" },
+  btnEliminar: { fontSize: 14, fontWeight: "700", color: "#DC2626" },
+  fecha: { fontSize: 13, fontWeight: "600", color: "#475569", marginTop: 2 },
   detalle: { fontSize: 13, color: "#475569", marginTop: 4 },
   detallePrestamo: {
     fontSize: 13,
@@ -745,7 +1061,41 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: "bold",
     color: "#0F172A",
-    marginBottom: 8,
+    marginBottom: 4,
+  },
+  modalSubtitulo: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: "#64748B",
+    marginBottom: 14,
+  },
+  inputLabel: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: "#334155",
+    marginBottom: 6,
+  },
+  inputModal: {
+    backgroundColor: "#F8FAFC",
+    borderWidth: 1,
+    borderColor: "#CBD5E1",
+    borderRadius: 8,
+    padding: 10,
+    fontSize: 14,
+    color: "#0F172A",
+    marginBottom: 12,
+  },
+  vistaPrevia: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: "#1E3A8A",
+    marginBottom: 12,
+  },
+  errorModal: {
+    color: "#DC2626",
+    fontSize: 13,
+    fontWeight: "600",
+    marginBottom: 12,
   },
   modalTexto: {
     fontSize: 14,
@@ -766,6 +1116,12 @@ const styles = StyleSheet.create({
     color: "#334155",
     fontWeight: "700",
     fontSize: 14,
+  },
+  btnModalGuardar: {
+    padding: 12,
+    borderRadius: 8,
+    backgroundColor: "#1D4ED8",
+    alignItems: "center",
   },
   btnModalConfirmar: {
     padding: 12,
