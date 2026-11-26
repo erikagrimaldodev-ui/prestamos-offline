@@ -4,6 +4,7 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
+  FlatList,
   ScrollView,
   Modal,
   StyleSheet,
@@ -19,11 +20,15 @@ type TipoModalCaja =
   | "efectivo_entregado"
   | "gasto"
   | null;
+type FiltroMov = "todos" | "entradas" | "salidas";
 
 interface PrestamoCajaRow {
   id: number;
   cliente_id: number;
   monto_prestado: number;
+  interes_porcentaje?: number | null;
+  monto_total?: number | null;
+  saldo_pendiente?: number | null;
   fecha_creacion: string;
   estado: string;
   moneda?: string | null;
@@ -44,6 +49,19 @@ interface MovimientoCajaRow {
   monto: number;
   fecha: string;
   moneda?: string | null;
+}
+
+interface ItemMovimientoLista {
+  id: string;
+  esResumenCierre: boolean;
+  tipo: string;
+  descripcion: string;
+  subtitulo: string;
+  fechaOrden: string;
+  monto: number;
+  moneda: Moneda;
+  esEntrada: boolean;
+  movimientoOriginal?: MovimientoCajaRow;
 }
 
 const normalizarMoneda = (moneda?: string | null): Moneda => {
@@ -148,10 +166,23 @@ const inferirMonedaMovimiento = (mov: MovimientoCajaRow): Moneda => {
   return "COP";
 };
 
+const obtenerMontoTotalPrestamo = (p: PrestamoCajaRow): number => {
+  const totalGuardado = Number(p.monto_total ?? 0);
+  if (!Number.isNaN(totalGuardado) && totalGuardado > 0) {
+    return totalGuardado;
+  }
+  const prestado = Number(p.monto_prestado || 0);
+  const pct = Number(p.interes_porcentaje || 0);
+  if (Number.isNaN(prestado) || prestado <= 0) return 0;
+  const interes = prestado * (pct / 100);
+  return prestado + interes;
+};
+
 export default function CajaBancosScreen() {
   const hoyInicial = obtenerFechaLocalHoy();
 
-  const [fechaFiltro] = useState(hoyInicial);
+  const [fechaHoy, setFechaHoy] = useState(hoyInicial);
+  const [filtroMov, setFiltroMov] = useState<FiltroMov>("todos");
   const [prestamos, setPrestamos] = useState<PrestamoCajaRow[]>([]);
   const [pagos, setPagos] = useState<PagoCajaRow[]>([]);
   const [movimientos, setMovimientos] = useState<MovimientoCajaRow[]>([]);
@@ -167,17 +198,21 @@ export default function CajaBancosScreen() {
   const [fechaModal, setFechaModal] = useState(hoyInicial);
   const [errorModal, setErrorModal] = useState("");
 
-  const fechaEfectiva = useMemo(() => {
-    const limpia = fechaFiltro.trim();
-    return /^\d{4}-\d{2}-\d{2}$/.test(limpia) ? limpia : obtenerFechaLocalHoy();
-  }, [fechaFiltro]);
-
   const cargarDatosCaja = useCallback(async () => {
-    const [listaPrestamos, listaPagos, listaMovimientos] = await Promise.all([
-      getAllRows<PrestamoCajaRow>(`
+    let listaPrestamos: PrestamoCajaRow[] = [];
+    try {
+      listaPrestamos = await getAllRows<PrestamoCajaRow>(`
+        SELECT id, cliente_id, monto_prestado, interes_porcentaje, monto_total, saldo_pendiente, fecha_creacion, estado, moneda
+        FROM prestamos
+      `);
+    } catch {
+      listaPrestamos = await getAllRows<PrestamoCajaRow>(`
         SELECT id, cliente_id, monto_prestado, fecha_creacion, estado, moneda
         FROM prestamos
-      `),
+      `);
+    }
+
+    const [listaPagos, listaMovimientos] = await Promise.all([
       getAllRows<PagoCajaRow>(`
         SELECT pg.id, pg.monto_pagado, pg.fecha_pago, pg.fecha_registro_local, p.moneda
         FROM pagos pg
@@ -187,7 +222,7 @@ export default function CajaBancosScreen() {
         SELECT *
         FROM movimientos_caja
         WHERE LOWER(TRIM(COALESCE(tipo, ''))) != 'renovacion'
-        ORDER BY id DESC
+        ORDER BY fecha DESC, id DESC
       `),
     ]);
 
@@ -198,6 +233,9 @@ export default function CajaBancosScreen() {
 
   useFocusEffect(
     useCallback(() => {
+      const hoyActual = obtenerFechaLocalHoy();
+      setFechaHoy(hoyActual);
+      setFechaModal(hoyActual);
       void cargarDatosCaja().catch(() => {
         setAviso({
           tipo: "error",
@@ -210,11 +248,15 @@ export default function CajaBancosScreen() {
   const resumenPorMoneda = useMemo(() => {
     const inicial = {
       efectivoRecibido: 0,
-      sumaPrestamos: 0,
-      dineroCobrado: 0,
+      sumaPrestamosDia: 0,
+      dineroCobradoDia: 0,
       efectivoEntregado: 0,
       gastos: 0,
+      egresosRenovacion: 0,
       restantePorEntregar: 0,
+      dineroEnCalleTotal: 0,
+      capitalEnCalleTotal: 0,
+      montoCobradoHistorico: 0,
     };
 
     const porMoneda: Record<Moneda, typeof inicial> = {
@@ -222,8 +264,9 @@ export default function CajaBancosScreen() {
       USD: { ...inicial },
     };
 
+    // Tarjetas diarias: solo movimientos de la fecha actual (fechaHoy)
     for (const mov of movimientos) {
-      if (normalizarFecha(mov.fecha) !== fechaEfectiva) continue;
+      if (normalizarFecha(mov.fecha) !== fechaHoy) continue;
       const m = inferirMonedaMovimiento(mov);
       const monto = Number(mov.monto || 0);
       if (Number.isNaN(monto) || monto <= 0) continue;
@@ -234,30 +277,57 @@ export default function CajaBancosScreen() {
         porMoneda[m].efectivoEntregado += monto;
       } else if (mov.tipo === "gasto") {
         porMoneda[m].gastos += monto;
+      } else if (mov.tipo === "renovacion_egreso") {
+        porMoneda[m].egresosRenovacion += monto;
       }
     }
 
+    // Préstamos del día + Dinero en la calle (general / todos los vigentes)
     for (const p of prestamos) {
-      if (normalizarFecha(p.fecha_creacion) !== fechaEfectiva) continue;
       const estadoLower = (p.estado || "").trim().toLowerCase();
-      if (estadoLower === "renovado") continue;
-
       const m = normalizarMoneda(p.moneda);
-      const monto = Number(p.monto_prestado || 0);
-      if (!Number.isNaN(monto) && monto > 0) {
-        porMoneda[m].sumaPrestamos += monto;
+      const montoPrestado = Number(p.monto_prestado || 0);
+
+      if (
+        normalizarFecha(p.fecha_creacion) === fechaHoy &&
+        estadoLower !== "renovado" &&
+        !Number.isNaN(montoPrestado) &&
+        montoPrestado > 0
+      ) {
+        porMoneda[m].sumaPrestamosDia += montoPrestado;
+      }
+
+      const esVigenteEnCalle =
+        estadoLower !== "renovado" &&
+        estadoLower !== "cancelado" &&
+        estadoLower !== "pagado" &&
+        estadoLower !== "liquidado" &&
+        Number(p.saldo_pendiente ?? 1) > 0;
+
+      if (esVigenteEnCalle) {
+        const totalConInteres = obtenerMontoTotalPrestamo(p);
+        if (!Number.isNaN(totalConInteres) && totalConInteres > 0) {
+          porMoneda[m].dineroEnCalleTotal += totalConInteres;
+        }
+        if (!Number.isNaN(montoPrestado) && montoPrestado > 0) {
+          porMoneda[m].capitalEnCalleTotal += montoPrestado;
+        }
       }
     }
 
+    // Cobros del día + Monto cobrado total histórico (todos los cobros)
     for (const pg of pagos) {
+      const m = normalizarMoneda(pg.moneda);
+      const monto = Number(pg.monto_pagado || 0);
+      if (Number.isNaN(monto) || monto <= 0) continue;
+
+      porMoneda[m].montoCobradoHistorico += monto;
+
       const fechaRef = normalizarFecha(
         pg.fecha_registro_local || pg.fecha_pago,
       );
-      if (fechaRef !== fechaEfectiva) continue;
-      const m = normalizarMoneda(pg.moneda);
-      const monto = Number(pg.monto_pagado || 0);
-      if (!Number.isNaN(monto) && monto > 0) {
-        porMoneda[m].dineroCobrado += monto;
+      if (fechaRef === fechaHoy) {
+        porMoneda[m].dineroCobradoDia += monto;
       }
     }
 
@@ -265,12 +335,113 @@ export default function CajaBancosScreen() {
       const d = porMoneda[m];
       d.restantePorEntregar =
         d.efectivoRecibido +
-        d.dineroCobrado -
-        (d.sumaPrestamos + d.gastos + d.efectivoEntregado);
+        d.dineroCobradoDia -
+        (d.sumaPrestamosDia +
+          d.gastos +
+          d.egresosRenovacion +
+          d.efectivoEntregado);
     }
 
     return porMoneda;
-  }, [movimientos, prestamos, pagos, fechaEfectiva]);
+  }, [movimientos, prestamos, pagos, fechaHoy]);
+
+  const itemsMovimientosLista = useMemo<ItemMovimientoLista[]>(() => {
+    const lista: ItemMovimientoLista[] = [];
+
+    // Agrupar totales de préstamos y cobros por fecha (todos los días y meses)
+    const prestamosPorFechaMoneda = new Map<string, number>();
+    const cobrosPorFechaMoneda = new Map<string, number>();
+
+    for (const p of prestamos) {
+      const estadoLower = (p.estado || "").trim().toLowerCase();
+      if (estadoLower === "renovado") continue;
+      const fechaP = normalizarFecha(p.fecha_creacion);
+      if (!fechaP) continue;
+      const m = normalizarMoneda(p.moneda);
+      const monto = Number(p.monto_prestado || 0);
+      if (Number.isNaN(monto) || monto <= 0) continue;
+      const clave = `${fechaP}__${m}`;
+      prestamosPorFechaMoneda.set(
+        clave,
+        (prestamosPorFechaMoneda.get(clave) || 0) + monto,
+      );
+    }
+
+    for (const pg of pagos) {
+      const fechaPg = normalizarFecha(pg.fecha_registro_local || pg.fecha_pago);
+      if (!fechaPg) continue;
+      const m = normalizarMoneda(pg.moneda);
+      const monto = Number(pg.monto_pagado || 0);
+      if (Number.isNaN(monto) || monto <= 0) continue;
+      const clave = `${fechaPg}__${m}`;
+      cobrosPorFechaMoneda.set(
+        clave,
+        (cobrosPorFechaMoneda.get(clave) || 0) + monto,
+      );
+    }
+
+    for (const [clave, totalPrestado] of prestamosPorFechaMoneda.entries()) {
+      const [fechaP, mStr] = clave.split("__");
+      const m = normalizarMoneda(mStr);
+      lista.push({
+        id: `cierre-prestamos-${fechaP}-${m}`,
+        esResumenCierre: true,
+        tipo: "cierre_prestamos",
+        descripcion: `Cierre del día — Total préstamos (${m})`,
+        subtitulo: `${fechaP} • Sale de caja`,
+        fechaOrden: fechaP,
+        monto: totalPrestado,
+        moneda: m,
+        esEntrada: false,
+      });
+    }
+
+    for (const [clave, totalCobrado] of cobrosPorFechaMoneda.entries()) {
+      const [fechaPg, mStr] = clave.split("__");
+      const m = normalizarMoneda(mStr);
+      lista.push({
+        id: `cierre-cobros-${fechaPg}-${m}`,
+        esResumenCierre: true,
+        tipo: "cierre_cobros",
+        descripcion: `Cierre del día — Total cobros (${m})`,
+        subtitulo: `${fechaPg} • Entra a caja`,
+        fechaOrden: fechaPg,
+        monto: totalCobrado,
+        moneda: m,
+        esEntrada: true,
+      });
+    }
+
+    // Todos los movimientos registrados en movimientos_caja (todos los días y meses)
+    for (const mov of movimientos) {
+      const m = inferirMonedaMovimiento(mov);
+      const esEntrada = mov.tipo === "efectivo_recibido";
+      const fechaMov = normalizarFecha(mov.fecha);
+      lista.push({
+        id: `mov-${mov.id}`,
+        esResumenCierre: false,
+        tipo: mov.tipo,
+        descripcion: mov.descripcion,
+        subtitulo: fechaMov || mov.fecha,
+        fechaOrden: fechaMov,
+        monto: Number(mov.monto || 0),
+        moneda: m,
+        esEntrada,
+        movimientoOriginal: mov,
+      });
+    }
+
+    // Ordenar de más reciente a más antiguo por fecha
+    lista.sort((a, b) => b.fechaOrden.localeCompare(a.fechaOrden));
+
+    if (filtroMov === "entradas") {
+      return lista.filter((item) => item.esEntrada);
+    }
+    if (filtroMov === "salidas") {
+      return lista.filter((item) => !item.esEntrada);
+    }
+    return lista;
+  }, [prestamos, pagos, movimientos, filtroMov]);
 
   const abrirModal = (tipo: Exclude<TipoModalCaja, null>) => {
     setAviso(null);
@@ -278,7 +449,7 @@ export default function CajaBancosScreen() {
     setTipoModal(tipo);
     setMonedaModal("COP");
     setMontoModal("");
-    setFechaModal(fechaEfectiva);
+    setFechaModal(obtenerFechaLocalHoy());
     if (tipo === "efectivo_recibido") {
       setDescripcionModal("Efectivo recibido del jefe");
     } else if (tipo === "efectivo_entregado") {
@@ -382,233 +553,302 @@ export default function CajaBancosScreen() {
         ? "Entregar Efectivo al Jefe"
         : "Registrar Gasto";
 
+  const renderHeaderLista = () => (
+    <View style={styles.contentWrapper}>
+      {aviso ? (
+        <View
+          style={[
+            styles.banner,
+            aviso.tipo === "exito" ? styles.bannerExito : styles.bannerError,
+          ]}
+        >
+          <Text
+            style={[
+              styles.bannerTexto,
+              aviso.tipo === "exito" ? styles.textoExito : styles.textoError,
+            ]}
+          >
+            {aviso.texto}
+          </Text>
+        </View>
+      ) : null}
+
+      {/* Restante por entregar del día */}
+      <View style={styles.gridDos}>
+        <View style={styles.cardEntregar}>
+          <Text style={styles.entregarLabel}>Restante por entregar (COP)</Text>
+          <Text style={styles.entregarValor}>
+            {formatearMontoMoneda(
+              resumenPorMoneda.COP.restantePorEntregar,
+              "COP",
+            )}
+          </Text>
+          <Text style={styles.entregarSub}>Cobrado + Recibido: {fechaHoy}</Text>
+        </View>
+
+        <View style={styles.cardEntregar}>
+          <Text style={styles.entregarLabel}>Restante por entregar (USD)</Text>
+          <Text style={styles.entregarValor}>
+            {formatearMontoMoneda(
+              resumenPorMoneda.USD.restantePorEntregar,
+              "USD",
+            )}
+          </Text>
+          <Text style={styles.entregarSub}>Cobrado + Recibido: {fechaHoy}</Text>
+        </View>
+      </View>
+
+      {/* Dinero en la calle (general) y Monto cobrado total (general) */}
+      <View style={styles.gridDos}>
+        <View style={[styles.tarjeta, styles.tarjetaCalle]}>
+          <View style={styles.tarjetaHeader}>
+            <Text style={styles.tarjetaTitulo}>Dinero en la Calle (Total)</Text>
+            <Text style={styles.tarjetaBadgeCalle}>Capital + Interés</Text>
+          </View>
+          <Text style={styles.montoLinea}>
+            COP:{" "}
+            {formatearMontoMoneda(
+              resumenPorMoneda.COP.dineroEnCalleTotal,
+              "COP",
+            )}
+          </Text>
+          <Text style={styles.subLineaCartera}>
+            Capital:{" "}
+            {formatearMontoMoneda(
+              resumenPorMoneda.COP.capitalEnCalleTotal,
+              "COP",
+            )}
+          </Text>
+          <Text style={styles.montoLinea}>
+            USD:{" "}
+            {formatearMontoMoneda(
+              resumenPorMoneda.USD.dineroEnCalleTotal,
+              "USD",
+            )}
+          </Text>
+          <Text style={styles.subLineaCartera}>
+            Capital:{" "}
+            {formatearMontoMoneda(
+              resumenPorMoneda.USD.capitalEnCalleTotal,
+              "USD",
+            )}
+          </Text>
+        </View>
+
+        <View style={[styles.tarjeta, styles.tarjetaCobradoTotal]}>
+          <View style={styles.tarjetaHeader}>
+            <Text style={styles.tarjetaTitulo}>Monto Cobrado Total</Text>
+            <Text style={styles.tarjetaBadgePositivo}>Todos los cobros</Text>
+          </View>
+          <Text style={styles.montoLinea}>
+            COP:{" "}
+            {formatearMontoMoneda(
+              resumenPorMoneda.COP.montoCobradoHistorico,
+              "COP",
+            )}
+          </Text>
+          <Text style={styles.montoLinea}>
+            USD:{" "}
+            {formatearMontoMoneda(
+              resumenPorMoneda.USD.montoCobradoHistorico,
+              "USD",
+            )}
+          </Text>
+        </View>
+      </View>
+
+      <TouchableOpacity
+        style={[styles.tarjeta, styles.tarjetaEfectivo]}
+        onPress={() => abrirModal("efectivo_recibido")}
+      >
+        <View style={styles.tarjetaHeader}>
+          <Text style={styles.tarjetaTitulo}>Efectivo Recibido del Jefe</Text>
+          <Text style={styles.tarjetaAccion}>+ Registrar (toca aquí)</Text>
+        </View>
+        <Text style={styles.montoLinea}>
+          COP:{" "}
+          {formatearMontoMoneda(resumenPorMoneda.COP.efectivoRecibido, "COP")}
+        </Text>
+        <Text style={styles.montoLinea}>
+          USD:{" "}
+          {formatearMontoMoneda(resumenPorMoneda.USD.efectivoRecibido, "USD")}
+        </Text>
+      </TouchableOpacity>
+
+      <View style={styles.tarjeta}>
+        <View style={styles.tarjetaHeader}>
+          <Text style={styles.tarjetaTitulo}>
+            Dinero Cobrado a Clientes (Día)
+          </Text>
+          <Text style={styles.tarjetaBadgePositivo}>Entra a caja</Text>
+        </View>
+        <Text style={styles.montoLinea}>
+          COP:{" "}
+          {formatearMontoMoneda(resumenPorMoneda.COP.dineroCobradoDia, "COP")}
+        </Text>
+        <Text style={styles.montoLinea}>
+          USD:{" "}
+          {formatearMontoMoneda(resumenPorMoneda.USD.dineroCobradoDia, "USD")}
+        </Text>
+      </View>
+
+      <View style={styles.tarjeta}>
+        <View style={styles.tarjetaHeader}>
+          <Text style={styles.tarjetaTitulo}>Suma de Préstamos (Día)</Text>
+          <Text style={styles.tarjetaBadgeNegativo}>Sale de caja</Text>
+        </View>
+        <Text style={styles.montoLinea}>
+          COP:{" "}
+          {formatearMontoMoneda(resumenPorMoneda.COP.sumaPrestamosDia, "COP")}
+        </Text>
+        <Text style={styles.montoLinea}>
+          USD:{" "}
+          {formatearMontoMoneda(resumenPorMoneda.USD.sumaPrestamosDia, "USD")}
+        </Text>
+      </View>
+
+      <TouchableOpacity
+        style={styles.tarjeta}
+        onPress={() => abrirModal("gasto")}
+      >
+        <View style={styles.tarjetaHeader}>
+          <Text style={styles.tarjetaTitulo}>Gastos / Renovaciones (Día)</Text>
+          <Text style={styles.tarjetaAccionNegativa}>+ Registrar gasto</Text>
+        </View>
+        <Text style={styles.montoLinea}>
+          COP:{" "}
+          {formatearMontoMoneda(
+            resumenPorMoneda.COP.gastos +
+              resumenPorMoneda.COP.egresosRenovacion,
+            "COP",
+          )}
+        </Text>
+        <Text style={styles.montoLinea}>
+          USD:{" "}
+          {formatearMontoMoneda(
+            resumenPorMoneda.USD.gastos +
+              resumenPorMoneda.USD.egresosRenovacion,
+            "USD",
+          )}
+        </Text>
+      </TouchableOpacity>
+
+      <TouchableOpacity
+        style={styles.tarjeta}
+        onPress={() => abrirModal("efectivo_entregado")}
+      >
+        <View style={styles.tarjetaHeader}>
+          <Text style={styles.tarjetaTitulo}>Dinero Entregado al Jefe</Text>
+          <Text style={styles.tarjetaAccionNegativa}>
+            + Entregar / Sale de caja
+          </Text>
+        </View>
+        <Text style={styles.montoLinea}>
+          COP:{" "}
+          {formatearMontoMoneda(resumenPorMoneda.COP.efectivoEntregado, "COP")}{" "}
+          - Restante:{" "}
+          {formatearMontoMoneda(
+            resumenPorMoneda.COP.restantePorEntregar,
+            "COP",
+          )}
+        </Text>
+        <Text style={styles.montoLinea}>
+          USD:{" "}
+          {formatearMontoMoneda(resumenPorMoneda.USD.efectivoEntregado, "USD")}{" "}
+          - Restante:{" "}
+          {formatearMontoMoneda(
+            resumenPorMoneda.USD.restantePorEntregar,
+            "USD",
+          )}
+        </Text>
+      </TouchableOpacity>
+
+      <Text style={styles.seccionTitulo}>
+        Movimientos y cierre (todos los días y meses) (
+        {itemsMovimientosLista.length})
+      </Text>
+
+      <View style={styles.filtrosRow}>
+        {(
+          [
+            { key: "todos", label: "Todos" },
+            { key: "entradas", label: "Entradas / Cobros" },
+            { key: "salidas", label: "Préstamos / Gastos" },
+          ] as const
+        ).map((f) => (
+          <TouchableOpacity
+            key={f.key}
+            style={[
+              styles.filtroChip,
+              filtroMov === f.key && styles.filtroChipActivo,
+            ]}
+            onPress={() => setFiltroMov(f.key)}
+          >
+            <Text
+              style={[
+                styles.filtroChipTexto,
+                filtroMov === f.key && styles.textoBlanco,
+              ]}
+            >
+              {f.label}
+            </Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+    </View>
+  );
+
+  const renderItemMovimiento = ({ item }: { item: ItemMovimientoLista }) => (
+    <View style={styles.contentWrapper}>
+      <View
+        style={[styles.movItem, item.esResumenCierre && styles.movItemCierre]}
+      >
+        <View style={{ flex: 1, paddingRight: 8 }}>
+          <Text style={styles.movDesc}>{item.descripcion}</Text>
+          <Text style={styles.movFecha}>{item.subtitulo}</Text>
+        </View>
+        <Text
+          style={[
+            styles.movMonto,
+            item.esEntrada ? styles.textoPositivo : styles.textoNegativo,
+          ]}
+        >
+          {item.esEntrada ? "+" : "-"}
+          {formatearMontoMoneda(item.monto, item.moneda)}
+        </Text>
+        {!item.esResumenCierre && item.movimientoOriginal ? (
+          <TouchableOpacity
+            onPress={() => void eliminarMovimiento(item.movimientoOriginal!.id)}
+            style={{ marginLeft: 10 }}
+          >
+            <Text style={styles.btnEliminar}>Eliminar</Text>
+          </TouchableOpacity>
+        ) : null}
+      </View>
+    </View>
+  );
+
   return (
     <KeyboardAvoidingView
       style={styles.keyboardWrapper}
       behavior={Platform.OS === "ios" ? "padding" : "height"}
+      keyboardVerticalOffset={Platform.OS === "ios" ? 0 : 20}
     >
-      <ScrollView
+      <FlatList
         style={styles.container}
         contentContainerStyle={styles.scrollContent}
+        data={itemsMovimientosLista}
+        keyExtractor={(item) => item.id}
+        renderItem={renderItemMovimiento}
+        ListHeaderComponent={renderHeaderLista}
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator
-      >
-        <View style={styles.contentWrapper}>
-          {aviso ? (
-            <View
-              style={[
-                styles.banner,
-                aviso.tipo === "exito"
-                  ? styles.bannerExito
-                  : styles.bannerError,
-              ]}
-            >
-              <Text
-                style={[
-                  styles.bannerTexto,
-                  aviso.tipo === "exito"
-                    ? styles.textoExito
-                    : styles.textoError,
-                ]}
-              >
-                {aviso.texto}
-              </Text>
-            </View>
-          ) : null}
-
-          <View style={styles.gridDos}>
-            <View style={styles.cardEntregar}>
-              <Text style={styles.entregarLabel}>
-                Restante por entregar (COP)
-              </Text>
-              <Text style={styles.entregarValor}>
-                {formatearMontoMoneda(
-                  resumenPorMoneda.COP.restantePorEntregar,
-                  "COP",
-                )}
-              </Text>
-              <Text style={styles.entregarSub}>
-                Cobrado + Recibido:{" "}
-                {formatearMontoMoneda(
-                  resumenPorMoneda.COP.dineroCobrado +
-                    resumenPorMoneda.COP.efectivoRecibido,
-                  "COP",
-                )}
-              </Text>
-            </View>
-
-            <View style={styles.cardEntregar}>
-              <Text style={styles.entregarLabel}>
-                Restante por entregar (USD)
-              </Text>
-              <Text style={styles.entregarValor}>
-                {formatearMontoMoneda(
-                  resumenPorMoneda.USD.restantePorEntregar,
-                  "USD",
-                )}
-              </Text>
-              <Text style={styles.entregarSub}>
-                Cobrado + Recibido:{" "}
-                {formatearMontoMoneda(
-                  resumenPorMoneda.USD.dineroCobrado +
-                    resumenPorMoneda.USD.efectivoRecibido,
-                  "USD",
-                )}
-              </Text>
-            </View>
+        ListEmptyComponent={
+          <View style={styles.contentWrapper}>
+            <Text style={styles.vacio}>No hay movimientos registrados.</Text>
           </View>
-
-          <TouchableOpacity
-            style={[styles.tarjeta, styles.tarjetaEfectivo]}
-            onPress={() => abrirModal("efectivo_recibido")}
-          >
-            <View style={styles.tarjetaHeader}>
-              <Text style={styles.tarjetaTitulo}>
-                Efectivo Recibido del Jefe
-              </Text>
-              <Text style={styles.tarjetaAccion}>+ Registrar (toca aquí)</Text>
-            </View>
-            <Text style={styles.montoLinea}>
-              COP:{" "}
-              {formatearMontoMoneda(
-                resumenPorMoneda.COP.efectivoRecibido,
-                "COP",
-              )}
-            </Text>
-            <Text style={styles.montoLinea}>
-              USD:{" "}
-              {formatearMontoMoneda(
-                resumenPorMoneda.USD.efectivoRecibido,
-                "USD",
-              )}
-            </Text>
-          </TouchableOpacity>
-
-          <View style={styles.tarjeta}>
-            <View style={styles.tarjetaHeader}>
-              <Text style={styles.tarjetaTitulo}>
-                Dinero Cobrado a Clientes
-              </Text>
-              <Text style={styles.tarjetaBadgePositivo}>Entra a caja</Text>
-            </View>
-            <Text style={styles.montoLinea}>
-              COP:{" "}
-              {formatearMontoMoneda(resumenPorMoneda.COP.dineroCobrado, "COP")}
-            </Text>
-            <Text style={styles.montoLinea}>
-              USD:{" "}
-              {formatearMontoMoneda(resumenPorMoneda.USD.dineroCobrado, "USD")}
-            </Text>
-          </View>
-
-          <View style={styles.tarjeta}>
-            <View style={styles.tarjetaHeader}>
-              <Text style={styles.tarjetaTitulo}>Suma de Préstamos</Text>
-              <Text style={styles.tarjetaBadgeNegativo}>Sale de caja</Text>
-            </View>
-            <Text style={styles.montoLinea}>
-              COP:{" "}
-              {formatearMontoMoneda(resumenPorMoneda.COP.sumaPrestamos, "COP")}
-            </Text>
-            <Text style={styles.montoLinea}>
-              USD:{" "}
-              {formatearMontoMoneda(resumenPorMoneda.USD.sumaPrestamos, "USD")}
-            </Text>
-          </View>
-
-          <TouchableOpacity
-            style={styles.tarjeta}
-            onPress={() => abrirModal("gasto")}
-          >
-            <View style={styles.tarjetaHeader}>
-              <Text style={styles.tarjetaTitulo}>Gastos Registrados</Text>
-              <Text style={styles.tarjetaAccionNegativa}>
-                + Registrar gasto
-              </Text>
-            </View>
-            <Text style={styles.montoLinea}>
-              COP: {formatearMontoMoneda(resumenPorMoneda.COP.gastos, "COP")}
-            </Text>
-            <Text style={styles.montoLinea}>
-              USD: {formatearMontoMoneda(resumenPorMoneda.USD.gastos, "USD")}
-            </Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={styles.tarjeta}
-            onPress={() => abrirModal("efectivo_entregado")}
-          >
-            <View style={styles.tarjetaHeader}>
-              <Text style={styles.tarjetaTitulo}>Dinero Entregado al Jefe</Text>
-              <Text style={styles.tarjetaAccionNegativa}>
-                + Entregar / Sale de caja
-              </Text>
-            </View>
-            <Text style={styles.montoLinea}>
-              COP:{" "}
-              {formatearMontoMoneda(
-                resumenPorMoneda.COP.efectivoEntregado,
-                "COP",
-              )}{" "}
-              • Restante:{" "}
-              {formatearMontoMoneda(
-                resumenPorMoneda.COP.restantePorEntregar,
-                "COP",
-              )}
-            </Text>
-            <Text style={styles.montoLinea}>
-              USD:{" "}
-              {formatearMontoMoneda(
-                resumenPorMoneda.USD.efectivoEntregado,
-                "USD",
-              )}{" "}
-              • Restante:{" "}
-              {formatearMontoMoneda(
-                resumenPorMoneda.USD.restantePorEntregar,
-                "USD",
-              )}
-            </Text>
-          </TouchableOpacity>
-
-          <Text style={styles.seccionTitulo}>
-            Registro completo de movimientos ({movimientos.length})
-          </Text>
-          <View style={styles.listaMovimientos}>
-            {movimientos.map((mov) => {
-              const m = inferirMonedaMovimiento(mov);
-              const esEntrada = mov.tipo === "efectivo_recibido";
-              return (
-                <View key={mov.id} style={styles.movItem}>
-                  <View style={{ flex: 1, paddingRight: 8 }}>
-                    <Text style={styles.movDesc}>{mov.descripcion}</Text>
-                    <Text style={styles.movFecha}>{mov.fecha}</Text>
-                  </View>
-                  <Text
-                    style={[
-                      styles.movMonto,
-                      esEntrada ? styles.textoPositivo : styles.textoNegativo,
-                    ]}
-                  >
-                    {esEntrada ? "+" : "-"}
-                    {formatearMontoMoneda(mov.monto, m)}
-                  </Text>
-                  <TouchableOpacity
-                    onPress={() => void eliminarMovimiento(mov.id)}
-                    style={{ marginLeft: 10 }}
-                  >
-                    <Text style={styles.btnEliminar}>Eliminar</Text>
-                  </TouchableOpacity>
-                </View>
-              );
-            })}
-            {movimientos.length === 0 ? (
-              <Text style={styles.vacio}>
-                No hay movimientos manuales registrados.
-              </Text>
-            ) : null}
-          </View>
-        </View>
-      </ScrollView>
+        }
+      />
 
       <Modal
         visible={tipoModal !== null}
@@ -616,11 +856,15 @@ export default function CajaBancosScreen() {
         animationType="fade"
         onRequestClose={cerrarModal}
       >
-        <View style={styles.modalOverlay}>
+        <KeyboardAvoidingView
+          style={styles.modalOverlay}
+          behavior={Platform.OS === "ios" ? "padding" : "height"}
+        >
           <View style={styles.modalCard}>
             <ScrollView
-              showsVerticalScrollIndicator={false}
+              showsVerticalScrollIndicator
               keyboardShouldPersistTaps="handled"
+              contentContainerStyle={styles.modalScrollContent}
             >
               <Text style={styles.modalTitulo}>{tituloModal}</Text>
 
@@ -722,7 +966,7 @@ export default function CajaBancosScreen() {
               </View>
             </ScrollView>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
     </KeyboardAvoidingView>
   );
@@ -739,7 +983,7 @@ const styles = StyleSheet.create({
   },
   scrollContent: {
     padding: 16,
-    paddingBottom: 140,
+    paddingBottom: 160,
   },
   contentWrapper: {
     width: "100%",
@@ -750,11 +994,11 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     flexWrap: "wrap",
     gap: 10,
-    marginBottom: 12,
+    marginBottom: 10,
   },
   cardEntregar: {
     flex: 1,
-    minWidth: 200,
+    minWidth: 160,
     backgroundColor: "#0F172A",
     padding: 14,
     borderRadius: 10,
@@ -779,12 +1023,22 @@ const styles = StyleSheet.create({
     flexShrink: 1,
   },
   tarjeta: {
+    flex: 1,
+    minWidth: 160,
     backgroundColor: "#fff",
     padding: 14,
     borderRadius: 10,
     borderWidth: 1,
     borderColor: "#E2E8F0",
     marginBottom: 10,
+  },
+  tarjetaCalle: {
+    borderColor: "#2563EB",
+    backgroundColor: "#EFF6FF",
+  },
+  tarjetaCobradoTotal: {
+    borderColor: "#0D9488",
+    backgroundColor: "#F0FDFA",
   },
   tarjetaEfectivo: {
     borderColor: "#16A34A",
@@ -814,6 +1068,15 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     color: "#DC2626",
   },
+  tarjetaBadgeCalle: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: "#1D4ED8",
+    backgroundColor: "#DBEAFE",
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 999,
+  },
   tarjetaBadgePositivo: {
     fontSize: 11,
     fontWeight: "700",
@@ -839,15 +1102,43 @@ const styles = StyleSheet.create({
     marginTop: 2,
     flexShrink: 1,
   },
+  subLineaCartera: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: "#475569",
+    marginTop: 1,
+  },
   seccionTitulo: {
     fontSize: 14,
     fontWeight: "700",
     color: "#334155",
-    marginTop: 8,
+    marginTop: 6,
     marginBottom: 8,
     flexShrink: 1,
   },
-  listaMovimientos: { gap: 8, paddingBottom: 28 },
+  filtrosRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    marginBottom: 10,
+  },
+  filtroChip: {
+    paddingVertical: 7,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#CBD5E1",
+    backgroundColor: "#fff",
+  },
+  filtroChipActivo: {
+    backgroundColor: "#0F172A",
+    borderColor: "#0F172A",
+  },
+  filtroChipTexto: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#334155",
+  },
   movItem: {
     flexDirection: "row",
     alignItems: "center",
@@ -856,6 +1147,11 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     borderWidth: 1,
     borderColor: "#E2E8F0",
+    marginBottom: 8,
+  },
+  movItemCierre: {
+    backgroundColor: "#F1F5F9",
+    borderColor: "#94A3B8",
   },
   movFecha: { fontSize: 12, color: "#64748B", marginTop: 2 },
   movDesc: {
@@ -873,7 +1169,7 @@ const styles = StyleSheet.create({
     padding: 10,
     borderRadius: 8,
     borderWidth: 1,
-    marginTop: 8,
+    marginTop: 4,
     marginBottom: 10,
   },
   bannerExito: { backgroundColor: "#DCFCE7", borderColor: "#16A34A" },
@@ -891,11 +1187,14 @@ const styles = StyleSheet.create({
   modalCard: {
     width: "100%",
     maxWidth: 460,
-    maxHeight: "90%",
+    maxHeight: "88%",
     backgroundColor: "#fff",
     borderRadius: 12,
     padding: 20,
     elevation: 5,
+  },
+  modalScrollContent: {
+    paddingBottom: 32,
   },
   modalTitulo: {
     fontSize: 17,

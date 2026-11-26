@@ -179,6 +179,14 @@ const redondearCuotaPorMoneda = (valor: number, moneda: Moneda): number => {
   return Math.ceil(valor / 100) * 100;
 };
 
+const redondearMontoPorMoneda = (valor: number, moneda: Moneda): number => {
+  if (Number.isNaN(valor) || valor <= 0) return 0;
+  if (moneda === "USD") {
+    return Math.round(valor * 10) / 10;
+  }
+  return Math.round(valor);
+};
+
 const formatearMilesEntero = (valor: number | null | undefined): string => {
   const num = Number(valor ?? 0);
   const redondeado = Math.round(Number.isNaN(num) ? 0 : num);
@@ -264,6 +272,39 @@ const obtenerFechaLocalHoy = (): string => {
 const parseDecimal = (valor: string): number => {
   const num = parseFloat(valor.replace(",", "."));
   return Number.isNaN(num) ? 0 : num;
+};
+
+const registrarDescuentoCajaRenovacion = async (
+  montoDescontar: number,
+  moneda: Moneda,
+  fechaStr: string,
+  descripcionBase: string,
+): Promise<void> => {
+  if (montoDescontar <= 0) return;
+
+  const descripcionConMoneda = descripcionBase
+    .toUpperCase()
+    .includes(`(${moneda})`)
+    ? descripcionBase
+    : `${descripcionBase} (${moneda})`;
+
+  try {
+    await runQuery(
+      `INSERT INTO movimientos_caja (tipo, descripcion, monto, fecha, moneda)
+       VALUES ('renovacion_egreso', ?, ?, ?, ?)`,
+      [descripcionConMoneda, montoDescontar, fechaStr, moneda],
+    );
+  } catch (err: any) {
+    const msg = String(err?.message || "");
+    if (!msg.toLowerCase().includes("moneda")) {
+      throw err;
+    }
+    await runQuery(
+      `INSERT INTO movimientos_caja (tipo, descripcion, monto, fecha)
+       VALUES ('renovacion_egreso', ?, ?, ?)`,
+      [descripcionConMoneda, montoDescontar, fechaStr],
+    );
+  }
 };
 
 export default function RenovarPrestamosScreen() {
@@ -439,15 +480,17 @@ export default function RenovarPrestamosScreen() {
       const encontrado = ordenadosAlfabetico.find((r) => r.id === targetId);
       if (encontrado) {
         const monedaPrest = normalizarMoneda(encontrado.moneda);
+        const montoSugerido =
+          encontrado.monto_prestado && encontrado.monto_prestado > 0
+            ? encontrado.monto_prestado
+            : encontrado.saldo_pendiente;
         const freqUpper =
           encontrado.frecuencia?.toUpperCase() as FrecuenciaPago;
         const freqValida = FRECUENCIAS.includes(freqUpper)
           ? freqUpper
           : "DIARIO";
         setPrestamoSeleccionado(encontrado);
-        setMontoBaseInput(
-          formatearMontoParaInput(encontrado.saldo_pendiente, monedaPrest),
-        );
+        setMontoBaseInput(formatearMontoParaInput(montoSugerido, monedaPrest));
         setFrecuencia(freqValida);
         setInteresInput(INTERES_POR_FRECUENCIA[freqValida]);
         setCantidadCuotasInput(CUOTAS_POR_FRECUENCIA[freqValida]);
@@ -495,12 +538,15 @@ export default function RenovarPrestamosScreen() {
 
   const abrirModalRenovar = (prestamo: PrestamoActivo) => {
     const monedaPrest = normalizarMoneda(prestamo.moneda);
+    const montoSugerido =
+      prestamo.monto_prestado && prestamo.monto_prestado > 0
+        ? prestamo.monto_prestado
+        : prestamo.saldo_pendiente;
+
     setMensaje(null);
     setMensajeModal(null);
     setPrestamoSeleccionado(prestamo);
-    setMontoBaseInput(
-      formatearMontoParaInput(prestamo.saldo_pendiente, monedaPrest),
-    );
+    setMontoBaseInput(formatearMontoParaInput(montoSugerido, monedaPrest));
     const freqUpper = prestamo.frecuencia?.toUpperCase() as FrecuenciaPago;
     const freqValida = FRECUENCIAS.includes(freqUpper) ? freqUpper : "DIARIO";
     setFrecuencia(freqValida);
@@ -516,12 +562,32 @@ export default function RenovarPrestamosScreen() {
   };
 
   const calculoRenovacion = useMemo(() => {
-    const base = parseMontoPorMoneda(montoBaseInput, monedaActiva);
+    const nuevoMontoPrestado = parseMontoPorMoneda(
+      montoBaseInput,
+      monedaActiva,
+    );
     const pct = parseDecimal(interesInput);
     const cuotas = Math.max(1, parseInt(cantidadCuotasInput, 10) || 1);
 
-    const montoInteresRaw = base * (pct / 100);
-    const montoTotalRaw = base + montoInteresRaw;
+    const saldoPendienteAnterior = Number(
+      prestamoSeleccionado?.saldo_pendiente || 0,
+    );
+    const capitalAnterior = Number(
+      prestamoSeleccionado?.monto_prestado ?? saldoPendienteAnterior,
+    );
+
+    const capitalRecuperadoAnterior = redondearMontoPorMoneda(
+      Math.max(0, capitalAnterior - saldoPendienteAnterior),
+      monedaActiva,
+    );
+
+    const efectivoEntregarCaja = redondearMontoPorMoneda(
+      Math.max(0, nuevoMontoPrestado - saldoPendienteAnterior),
+      monedaActiva,
+    );
+
+    const montoInteresRaw = nuevoMontoPrestado * (pct / 100);
+    const montoTotalRaw = nuevoMontoPrestado + montoInteresRaw;
 
     const montoInteres =
       monedaActiva === "USD"
@@ -539,14 +605,23 @@ export default function RenovarPrestamosScreen() {
         : 0;
 
     return {
-      base,
+      nuevoMontoPrestado,
+      saldoPendienteAnterior,
+      capitalRecuperadoAnterior,
+      efectivoEntregarCaja,
       pct,
       cuotas,
       montoInteres,
       montoTotal,
       valorCuota,
     };
-  }, [montoBaseInput, interesInput, cantidadCuotasInput, monedaActiva]);
+  }, [
+    montoBaseInput,
+    interesInput,
+    cantidadCuotasInput,
+    monedaActiva,
+    prestamoSeleccionado,
+  ]);
 
   const guardarRenovacion = async () => {
     setMensajeModal(null);
@@ -562,10 +637,10 @@ export default function RenovarPrestamosScreen() {
 
     const monedaPrest = normalizarMoneda(prestamoSeleccionado.moneda);
 
-    if (calculoRenovacion.base <= 0) {
+    if (calculoRenovacion.nuevoMontoPrestado <= 0) {
       setMensajeModal({
         tipo: "error",
-        texto: "El monto pendiente a renovar debe ser mayor a 0.",
+        texto: "El monto del nuevo préstamo debe ser mayor a 0.",
       });
       return;
     }
@@ -620,7 +695,7 @@ export default function RenovarPrestamosScreen() {
           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'activo', ?)`,
           [
             prestamoSeleccionado.cliente_id,
-            calculoRenovacion.base,
+            calculoRenovacion.nuevoMontoPrestado,
             calculoRenovacion.pct,
             frecuencia.toLowerCase(),
             calculoRenovacion.cuotas,
@@ -651,7 +726,7 @@ export default function RenovarPrestamosScreen() {
           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'activo')`,
           [
             prestamoSeleccionado.cliente_id,
-            calculoRenovacion.base,
+            calculoRenovacion.nuevoMontoPrestado,
             calculoRenovacion.pct,
             frecuencia.toLowerCase(),
             calculoRenovacion.cuotas,
@@ -660,6 +735,15 @@ export default function RenovarPrestamosScreen() {
             calculoRenovacion.montoTotal,
             fechaLimpia,
           ],
+        );
+      }
+
+      if (calculoRenovacion.efectivoEntregarCaja > 0) {
+        await registrarDescuentoCajaRenovacion(
+          calculoRenovacion.efectivoEntregarCaja,
+          monedaPrest,
+          fechaLimpia,
+          `Efectivo entregado por renovación préstamo #${prestamoSeleccionado.id} — ${prestamoSeleccionado.cliente_nombre}`,
         );
       }
 
@@ -677,7 +761,14 @@ export default function RenovarPrestamosScreen() {
       }
 
       const nombreCliente = prestamoSeleccionado.cliente_nombre;
-      const totalCreado = calculoRenovacion.montoTotal;
+      const montoNuevoTexto = formatearMontoPorMoneda(
+        calculoRenovacion.nuevoMontoPrestado,
+        monedaPrest,
+      );
+      const efectivoCajaTexto = formatearMontoPorMoneda(
+        calculoRenovacion.efectivoEntregarCaja,
+        monedaPrest,
+      );
 
       setPrestamoSeleccionado(null);
       setModalRenovarVisible(false);
@@ -685,7 +776,7 @@ export default function RenovarPrestamosScreen() {
 
       setMensaje({
         tipo: "exito",
-        texto: `Préstamo renovado (${monedaPrest}) para ${nombreCliente}: nuevo monto total ${formatearMontoPorMoneda(totalCreado, monedaPrest)} (${calculoRenovacion.pct}% interés).`,
+        texto: `Préstamo renovado (${monedaPrest}) para ${nombreCliente}: nuevo préstamo por ${montoNuevoTexto} (${calculoRenovacion.pct}% interés) • Efectivo descontado de caja: ${efectivoCajaTexto}.`,
       });
     } catch (e: any) {
       setMensajeModal({
@@ -795,7 +886,7 @@ export default function RenovarPrestamosScreen() {
                           montoPrestadoMostrar,
                           monedaItem,
                         )}{" "}
-                        • Moneda: {monedaItem}
+                        - Moneda: {monedaItem}
                       </Text>
                       {renovadoHoy ? (
                         <View style={styles.badgeRenovado}>
@@ -878,9 +969,24 @@ export default function RenovarPrestamosScreen() {
                       Moneda del préstamo: {monedaActiva}
                     </Text>
                     <Text style={styles.resumenTexto}>
+                      Capital anterior:{" "}
+                      {formatearMontoPorMoneda(
+                        prestamoSeleccionado.monto_prestado ??
+                          prestamoSeleccionado.saldo_pendiente,
+                        monedaActiva,
+                      )}
+                    </Text>
+                    <Text style={styles.resumenTexto}>
                       Saldo pendiente actual:{" "}
                       {formatearMontoPorMoneda(
                         prestamoSeleccionado.saldo_pendiente,
+                        monedaActiva,
+                      )}
+                    </Text>
+                    <Text style={styles.resumenTexto}>
+                      Disponible / recuperado anterior:{" "}
+                      {formatearMontoPorMoneda(
+                        calculoRenovacion.capitalRecuperadoAnterior,
                         monedaActiva,
                       )}
                     </Text>
@@ -894,9 +1000,8 @@ export default function RenovarPrestamosScreen() {
                 ) : null}
 
                 <Text style={styles.modalLabel}>
-                  Monto pendiente a renovar (
-                  {monedaActiva === "USD" ? "US$" : "$"}
-                  ):
+                  Monto del nuevo préstamo (
+                  {monedaActiva === "USD" ? "US$" : "$"}):
                 </Text>
                 <TextInput
                   style={styles.input}
@@ -910,7 +1015,7 @@ export default function RenovarPrestamosScreen() {
                     )
                   }
                   placeholder={
-                    monedaActiva === "USD" ? "Ej: 62.5" : "Ej: 50.000"
+                    monedaActiva === "USD" ? "Ej: 100" : "Ej: 400.000"
                   }
                 />
 
@@ -978,6 +1083,20 @@ export default function RenovarPrestamosScreen() {
                     Moneda: {monedaActiva}
                   </Text>
                   <Text style={styles.calculoTexto}>
+                    Nuevo monto prestado:{" "}
+                    {formatearMontoPorMoneda(
+                      calculoRenovacion.nuevoMontoPrestado,
+                      monedaActiva,
+                    )}
+                  </Text>
+                  <Text style={styles.calculoDestacado}>
+                    Efectivo a entregar de caja:{" "}
+                    {formatearMontoPorMoneda(
+                      calculoRenovacion.efectivoEntregarCaja,
+                      monedaActiva,
+                    )}
+                  </Text>
+                  <Text style={styles.calculoTexto}>
                     Interés ({calculoRenovacion.pct}%): +
                     {formatearMontoPorMoneda(
                       calculoRenovacion.montoInteres,
@@ -985,14 +1104,15 @@ export default function RenovarPrestamosScreen() {
                     )}
                   </Text>
                   <Text style={styles.calculoTexto}>
-                    Monto Total a Pagar:{" "}
+                    Monto total nuevo préstamo:{" "}
                     {formatearMontoPorMoneda(
                       calculoRenovacion.montoTotal,
                       monedaActiva,
                     )}
                   </Text>
                   <Text style={styles.calculoTexto}>
-                    Valor Cuota ({frecuencia.toLowerCase()}):{" "}
+                    Valor cuota ({frecuencia.toLowerCase()} x{" "}
+                    {calculoRenovacion.cuotas}):{" "}
                     {formatearMontoPorMoneda(
                       calculoRenovacion.valorCuota,
                       monedaActiva,
@@ -1032,7 +1152,7 @@ export default function RenovarPrestamosScreen() {
 
                   <TouchableOpacity
                     style={styles.btnGuardar}
-                    onPress={guardarRenovacion}
+                    onPress={() => void guardarRenovacion()}
                   >
                     <Text style={styles.btnGuardarTexto}>
                       Guardar Renovación
@@ -1059,28 +1179,24 @@ const styles = StyleSheet.create({
     backgroundColor: "#F8FAFC",
   },
   scrollContent: {
-    paddingBottom: 140,
+    paddingBottom: 32,
   },
   filaSuperior: {
     flexDirection: "row",
-    flexWrap: "wrap",
     gap: 10,
     alignItems: "flex-start",
   },
   cajaBuscador: {
     flex: 1,
-    minWidth: 200,
   },
   cajaFechaHoy: {
-    width: 145,
-    flexShrink: 0,
+    width: 132,
   },
   label: {
     fontSize: 13,
     fontWeight: "600",
     color: "#334155",
     marginTop: 8,
-    flexShrink: 1,
   },
   buscador: {
     backgroundColor: "#fff",
@@ -1099,6 +1215,7 @@ const styles = StyleSheet.create({
     padding: 11,
     marginTop: 6,
     fontSize: 14,
+    textAlign: "center",
   },
   bannerMensaje: {
     marginTop: 10,
@@ -1118,11 +1235,18 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: "700",
     textAlign: "center",
-    flexShrink: 1,
   },
-  textoExito: { color: "#14532D" },
-  textoError: { color: "#DC2626" },
-  listaPrestamos: { marginTop: 8, gap: 8, paddingBottom: 24 },
+  textoExito: {
+    color: "#14532D",
+  },
+  textoError: {
+    color: "#DC2626",
+  },
+  listaPrestamos: {
+    marginTop: 8,
+    gap: 8,
+    paddingBottom: 24,
+  },
   itemCard: {
     backgroundColor: "#fff",
     padding: 12,
@@ -1135,18 +1259,17 @@ const styles = StyleSheet.create({
     borderColor: "#16A34A",
   },
   itemCardMora: {
-    backgroundColor: "#FFFBEB",
-    borderColor: "#F59E0B",
+    backgroundColor: "#FEF2F2",
+    borderColor: "#DC2626",
   },
   itemRow: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    gap: 10,
   },
   itemInfoCol: {
     flex: 1,
-    flexShrink: 1,
+    paddingRight: 8,
   },
   itemHeader: {
     flexDirection: "row",
@@ -1158,42 +1281,26 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: "bold",
     color: "#0F172A",
-    flexShrink: 1,
   },
-  textoRenovadoHoy: { color: "#14532D" },
+  textoRenovadoHoy: {
+    color: "#14532D",
+  },
   itemLineaSecundaria: {
     fontSize: 12,
     fontWeight: "600",
     color: "#334155",
-    marginTop: 4,
-    flexShrink: 1,
+    marginTop: 3,
   },
   itemSub: {
     fontSize: 12,
-    color: "#64748B",
-    marginTop: 3,
-    flexShrink: 1,
+    color: "#475569",
+    marginTop: 2,
   },
   alertaMoraTexto: {
     fontSize: 12,
     fontWeight: "700",
-    color: "#B45309",
+    color: "#B91C1C",
     marginTop: 4,
-    flexShrink: 1,
-  },
-  alertaMoraModal: {
-    backgroundColor: "#FEF3C7",
-    borderColor: "#F59E0B",
-    borderWidth: 1,
-    borderRadius: 8,
-    padding: 10,
-    marginBottom: 8,
-  },
-  alertaMoraModalTexto: {
-    fontSize: 13,
-    fontWeight: "700",
-    color: "#92400E",
-    flexShrink: 1,
   },
   badgeRenovado: {
     backgroundColor: "#16A34A",
@@ -1211,14 +1318,17 @@ const styles = StyleSheet.create({
     paddingVertical: 9,
     paddingHorizontal: 14,
     borderRadius: 8,
-    flexShrink: 0,
   },
   btnAccionTexto: {
     color: "#fff",
     fontWeight: "700",
     fontSize: 13,
   },
-  vacio: { color: "#64748B", fontStyle: "italic", marginTop: 6 },
+  vacio: {
+    color: "#64748B",
+    fontStyle: "italic",
+    marginTop: 6,
+  },
   modalOverlay: {
     flex: 1,
     backgroundColor: "rgba(15, 23, 42, 0.55)",
@@ -1228,7 +1338,7 @@ const styles = StyleSheet.create({
   },
   modalCard: {
     width: "100%",
-    maxWidth: 480,
+    maxWidth: 460,
     maxHeight: "90%",
     backgroundColor: "#fff",
     borderRadius: 12,
@@ -1240,7 +1350,19 @@ const styles = StyleSheet.create({
     fontWeight: "bold",
     color: "#0F172A",
     marginBottom: 10,
-    flexShrink: 1,
+  },
+  alertaMoraModal: {
+    backgroundColor: "#FEF2F2",
+    borderWidth: 1,
+    borderColor: "#FCA5A5",
+    padding: 10,
+    borderRadius: 8,
+    marginBottom: 10,
+  },
+  alertaMoraModalTexto: {
+    color: "#B91C1C",
+    fontSize: 12,
+    fontWeight: "700",
   },
   resumenPrestamo: {
     backgroundColor: "#F1F5F9",
@@ -1253,14 +1375,12 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: "600",
     color: "#1E293B",
-    flexShrink: 1,
   },
   modalLabel: {
     fontSize: 13,
     fontWeight: "600",
     color: "#334155",
     marginTop: 10,
-    flexShrink: 1,
   },
   input: {
     backgroundColor: "#fff",
@@ -1279,7 +1399,7 @@ const styles = StyleSheet.create({
   },
   frecuenciaBtn: {
     paddingVertical: 8,
-    paddingHorizontal: 12,
+    paddingHorizontal: 11,
     borderRadius: 8,
     borderWidth: 1,
     borderColor: "#CBD5E1",
@@ -1299,18 +1419,22 @@ const styles = StyleSheet.create({
   },
   calculoBox: {
     backgroundColor: "#EFF6FF",
-    borderColor: "#BFDBFE",
     borderWidth: 1,
+    borderColor: "#BFDBFE",
+    padding: 10,
     borderRadius: 8,
-    padding: 12,
     marginTop: 12,
     gap: 4,
   },
   calculoTexto: {
     fontSize: 13,
-    fontWeight: "700",
+    fontWeight: "600",
     color: "#1E3A8A",
-    flexShrink: 1,
+  },
+  calculoDestacado: {
+    fontSize: 13,
+    fontWeight: "800",
+    color: "#0F172A",
   },
   modalActions: {
     flexDirection: "row",

@@ -4,15 +4,23 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
+  FlatList,
   ScrollView,
   Modal,
   StyleSheet,
+  KeyboardAvoidingView,
+  Platform,
 } from "react-native";
 import { useFocusEffect } from "expo-router";
 import { getAllRows, runQuery } from "../../database/db";
 
 type Moneda = "COP" | "USD";
-type FiltroFrecuencia = "todas" | "diario" | "semanal" | "mensual";
+type FiltroFrecuencia =
+  | "todas"
+  | "diario"
+  | "semanal"
+  | "quincenal"
+  | "mensual";
 
 interface PrestamoActivo {
   id: number;
@@ -638,8 +646,8 @@ export default function RegistrarPagoScreen() {
     }
   };
 
-  return (
-    <ScrollView style={styles.container}>
+  const renderHeaderLista = () => (
+    <View>
       <View style={styles.filaSuperior}>
         <View style={{ flex: 1 }}>
           <Text style={styles.label}>Buscar cliente por nombre:</Text>
@@ -705,107 +713,117 @@ export default function RegistrarPagoScreen() {
         Préstamos activos ({prestamosFiltrados.length}) • Total pagado hoy (
         {fechaHoyEfectiva}): {formatearMilesEntero(totalPagadoHoy)}
       </Text>
+    </View>
+  );
 
-      <View style={styles.listaPrestamos}>
-        {prestamosFiltrados.map((item) => {
-          const pagadoHoy = item.pagado_hoy === 1;
-          const monedaItem = normalizarMoneda(item.moneda);
-          const montoPrestadoValor =
-            item.monto_prestado != null && Number(item.monto_prestado) > 0
-              ? Number(item.monto_prestado)
-              : Number(item.monto_total || 0);
-          const montoTotalValor = obtenerMontoTotalEfectivo(item);
-          const porcentajeTexto = formatearPorcentaje(item.interes_porcentaje);
-          const fechaRegistroPrestamo = obtenerFechaRegistroEfectiva(
-            item,
-            fechaHoyEfectiva,
-          );
-          const cuotasFaltantes = calcularCuotasFaltantes(item);
-          const montoPagadoValor = calcularMontoPagadoEstimado(item);
-          const proximaFechaCuota = obtenerProximaFechaCuota(
-            item,
-            fechaHoyEfectiva,
-          );
-          const alertaMora = obtenerAlertaMoraLetras(item, fechaHoyEfectiva);
+  const renderItemPrestamo = ({ item }: { item: PrestamoActivo }) => {
+    const pagadoHoy = item.pagado_hoy === 1;
+    const monedaItem = normalizarMoneda(item.moneda);
+    const montoPrestadoValor =
+      item.monto_prestado != null && Number(item.monto_prestado) > 0
+        ? Number(item.monto_prestado)
+        : Number(item.monto_total || 0);
+    const montoTotalValor = obtenerMontoTotalEfectivo(item);
+    const porcentajeTexto = formatearPorcentaje(item.interes_porcentaje);
+    const fechaRegistroPrestamo = obtenerFechaRegistroEfectiva(
+      item,
+      fechaHoyEfectiva,
+    );
+    const cuotasFaltantes = calcularCuotasFaltantes(item);
+    const montoPagadoValor = calcularMontoPagadoEstimado(item);
+    const proximaFechaCuota = obtenerProximaFechaCuota(item, fechaHoyEfectiva);
+    const alertaMora = obtenerAlertaMoraLetras(item, fechaHoyEfectiva);
 
-          return (
-            <TouchableOpacity
-              key={item.id}
-              style={[
-                styles.itemCard,
-                pagadoHoy && styles.itemCardPagadoHoy,
-                alertaMora && !pagadoHoy && styles.itemCardMora,
-              ]}
-              onPress={() => abrirModalPago(item)}
-            >
-              <View style={styles.itemRow}>
-                <View style={{ flex: 1, paddingRight: 8 }}>
-                  <View style={styles.itemHeader}>
-                    <Text
-                      style={[
-                        styles.itemTitle,
-                        pagadoHoy && styles.textoPagadoHoy,
-                      ]}
-                    >
-                      {item.cliente_nombre} (#{item.id}) Monto prestado:{" "}
-                      {formatearMontoPorMoneda(montoPrestadoValor, monedaItem)}
-                    </Text>
-                    <TouchableOpacity
-                      style={styles.btnPagarItem}
-                      onPress={() => abrirModalPago(item)}
-                    >
-                      <Text style={styles.btnPagarItemTexto}>Pagar</Text>
-                    </TouchableOpacity>
-                    {pagadoHoy ? (
-                      <View style={styles.badgePagado}>
-                        <Text style={styles.badgeTexto}>Pagado hoy</Text>
-                      </View>
-                    ) : null}
-                  </View>
-
-                  <Text style={styles.itemFechaRegistro}>
-                    Fecha del préstamo: {fechaRegistroPrestamo}
-                    <Text style={styles.textoNormalSinNegrita}>
-                      {" "}
-                      | Monto total:{" "}
-                      {formatearMontoPorMoneda(montoTotalValor, monedaItem)}
-                    </Text>
-                  </Text>
-
-                  <Text style={styles.itemSub}>
-                    Interés: {porcentajeTexto}% | Cuota ({item.frecuencia}):{" "}
-                    {formatearMontoPorMoneda(item.valor_cuota, monedaItem)}
-                  </Text>
-
-                  <Text style={styles.itemDetalleCuotas}>
-                    Cuotas faltantes: {cuotasFaltantes} | Pagado:{" "}
-                    {formatearMontoPorMoneda(montoPagadoValor, monedaItem)} |
-                    Pendiente:{" "}
-                    {formatearMontoPorMoneda(item.saldo_pendiente, monedaItem)}
-                  </Text>
-
-                  {proximaFechaCuota ? (
-                    <Text style={styles.proximaCuotaTexto}>
-                      Próxima cuota programada: {proximaFechaCuota}
-                    </Text>
-                  ) : null}
-
-                  {alertaMora ? (
-                    <Text style={styles.moraLetras}>{alertaMora}</Text>
-                  ) : null}
+    return (
+      <TouchableOpacity
+        style={[
+          styles.itemCard,
+          pagadoHoy && styles.itemCardPagadoHoy,
+          alertaMora && !pagadoHoy && styles.itemCardMora,
+        ]}
+        onPress={() => abrirModalPago(item)}
+      >
+        <View style={styles.itemRow}>
+          <View style={{ flex: 1, paddingRight: 8 }}>
+            <View style={styles.itemHeader}>
+              <Text
+                style={[styles.itemTitle, pagadoHoy && styles.textoPagadoHoy]}
+              >
+                {item.cliente_nombre} (#{item.id}) Monto prestado:{" "}
+                {formatearMontoPorMoneda(montoPrestadoValor, monedaItem)}
+              </Text>
+              <TouchableOpacity
+                style={styles.btnPagarItem}
+                onPress={() => abrirModalPago(item)}
+              >
+                <Text style={styles.btnPagarItemTexto}>Pagar</Text>
+              </TouchableOpacity>
+              {pagadoHoy ? (
+                <View style={styles.badgePagado}>
+                  <Text style={styles.badgeTexto}>Pagado hoy</Text>
                 </View>
-              </View>
-            </TouchableOpacity>
-          );
-        })}
-        {prestamosFiltrados.length === 0 && (
+              ) : null}
+            </View>
+
+            <Text style={styles.itemFechaRegistro}>
+              Fecha del préstamo: {fechaRegistroPrestamo}
+              <Text style={styles.textoNormalSinNegrita}>
+                {" "}
+                | Monto total:{" "}
+                {formatearMontoPorMoneda(montoTotalValor, monedaItem)}
+              </Text>
+            </Text>
+
+            <Text style={styles.itemSub}>
+              Interés: {porcentajeTexto}% | Cuota ({item.frecuencia}):{" "}
+              {formatearMontoPorMoneda(item.valor_cuota, monedaItem)}
+            </Text>
+
+            <Text style={styles.itemDetalleCuotas}>
+              Cuotas faltantes: {cuotasFaltantes} | Pagado:{" "}
+              {formatearMontoPorMoneda(montoPagadoValor, monedaItem)} |
+              Pendiente:{" "}
+              {formatearMontoPorMoneda(item.saldo_pendiente, monedaItem)}
+            </Text>
+
+            {proximaFechaCuota ? (
+              <Text style={styles.proximaCuotaTexto}>
+                Próxima cuota programada: {proximaFechaCuota}
+              </Text>
+            ) : null}
+
+            {alertaMora ? (
+              <Text style={styles.moraLetras}>{alertaMora}</Text>
+            ) : null}
+          </View>
+        </View>
+      </TouchableOpacity>
+    );
+  };
+
+  return (
+    <KeyboardAvoidingView
+      style={styles.keyboardWrapper}
+      behavior={Platform.OS === "ios" ? "padding" : "height"}
+      keyboardVerticalOffset={Platform.OS === "ios" ? 0 : 20}
+    >
+      <FlatList
+        style={styles.container}
+        contentContainerStyle={styles.scrollContent}
+        data={prestamosFiltrados}
+        keyExtractor={(item) => String(item.id)}
+        renderItem={renderItemPrestamo}
+        ListHeaderComponent={renderHeaderLista}
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator
+        ListEmptyComponent={
           <Text style={styles.vacio}>
             {busqueda.trim() || filtroFrecuencia !== "todas"
               ? "No se encontraron préstamos activos con ese filtro."
               : "No hay préstamos activos con saldo pendiente."}
           </Text>
-        )}
-      </View>
+        }
+      />
 
       {/* Modal principal de registro de pago */}
       <Modal
@@ -814,162 +832,176 @@ export default function RegistrarPagoScreen() {
         animationType="fade"
         onRequestClose={cerrarModalPago}
       >
-        <View style={styles.modalOverlay}>
+        <KeyboardAvoidingView
+          style={styles.modalOverlay}
+          behavior={Platform.OS === "ios" ? "padding" : "height"}
+        >
           <View style={styles.modalCard}>
-            <Text style={styles.modalTitulo}>
-              Registrar Pago — {prestamoSeleccionado?.cliente_nombre} (#
-              {prestamoSeleccionado?.id})
-            </Text>
+            <ScrollView
+              showsVerticalScrollIndicator
+              keyboardShouldPersistTaps="handled"
+              contentContainerStyle={styles.modalScrollContent}
+            >
+              <Text style={styles.modalTitulo}>
+                Registrar Pago — {prestamoSeleccionado?.cliente_nombre} (#
+                {prestamoSeleccionado?.id})
+              </Text>
 
-            {prestamoSeleccionado ? (
-              <View style={styles.resumenPrestamo}>
-                <Text style={styles.resumenTexto}>
-                  Fecha del préstamo:{" "}
-                  {obtenerFechaRegistroEfectiva(
-                    prestamoSeleccionado,
-                    fechaHoyEfectiva,
-                  )}
-                  <Text style={styles.textoNormalSinNegrita}> </Text>
-                </Text>
-                <Text style={styles.resumenTexto}>
-                  Monto prestado:{" "}
-                  {formatearMontoPorMoneda(
-                    prestamoSeleccionado.monto_prestado ??
-                      prestamoSeleccionado.monto_total,
-                    normalizarMoneda(prestamoSeleccionado.moneda),
-                  )}
-                </Text>
-                <Text style={styles.resumenTexto}>
-                  Interés:{" "}
-                  {formatearPorcentaje(prestamoSeleccionado.interes_porcentaje)}
-                  % | Monto total:{" "}
-                  {formatearMontoPorMoneda(
-                    obtenerMontoTotalEfectivo(prestamoSeleccionado),
-                    normalizarMoneda(prestamoSeleccionado.moneda),
-                  )}
-                </Text>
-                <Text style={styles.resumenTexto}>
-                  Saldo pendiente:{" "}
-                  {formatearMontoPorMoneda(
-                    prestamoSeleccionado.saldo_pendiente,
-                    normalizarMoneda(prestamoSeleccionado.moneda),
-                  )}
-                </Text>
-                <Text style={styles.resumenTexto}>
-                  Cuota ({prestamoSeleccionado.frecuencia}):{" "}
-                  {formatearMontoPorMoneda(
-                    prestamoSeleccionado.valor_cuota,
-                    normalizarMoneda(prestamoSeleccionado.moneda),
-                  )}
-                </Text>
-                <Text style={styles.resumenTexto}>
-                  Cuotas faltantes:{" "}
-                  {calcularCuotasFaltantes(prestamoSeleccionado)}
-                </Text>
-                {obtenerProximaFechaCuota(
-                  prestamoSeleccionado,
-                  fechaHoyEfectiva,
-                ) ? (
+              {prestamoSeleccionado ? (
+                <View style={styles.resumenPrestamo}>
                   <Text style={styles.resumenTexto}>
-                    Próxima cuota programada:{" "}
-                    {obtenerProximaFechaCuota(
+                    Fecha del préstamo:{" "}
+                    {obtenerFechaRegistroEfectiva(
                       prestamoSeleccionado,
                       fechaHoyEfectiva,
                     )}
+                    <Text style={styles.textoNormalSinNegrita}> </Text>
                   </Text>
-                ) : null}
-                <Text style={styles.resumenTexto}>
-                  Fecha local del día: {fechaHoyEfectiva}
-                </Text>
-              </View>
-            ) : null}
+                  <Text style={styles.resumenTexto}>
+                    Monto prestado:{" "}
+                    {formatearMontoPorMoneda(
+                      prestamoSeleccionado.monto_prestado ??
+                        prestamoSeleccionado.monto_total,
+                      normalizarMoneda(prestamoSeleccionado.moneda),
+                    )}
+                  </Text>
+                  <Text style={styles.resumenTexto}>
+                    Interés:{" "}
+                    {formatearPorcentaje(
+                      prestamoSeleccionado.interes_porcentaje,
+                    )}
+                    % | Monto total:{" "}
+                    {formatearMontoPorMoneda(
+                      obtenerMontoTotalEfectivo(prestamoSeleccionado),
+                      normalizarMoneda(prestamoSeleccionado.moneda),
+                    )}
+                  </Text>
+                  <Text style={styles.resumenTexto}>
+                    Saldo pendiente:{" "}
+                    {formatearMontoPorMoneda(
+                      prestamoSeleccionado.saldo_pendiente,
+                      normalizarMoneda(prestamoSeleccionado.moneda),
+                    )}
+                  </Text>
+                  <Text style={styles.resumenTexto}>
+                    Cuota ({prestamoSeleccionado.frecuencia}):{" "}
+                    {formatearMontoPorMoneda(
+                      prestamoSeleccionado.valor_cuota,
+                      normalizarMoneda(prestamoSeleccionado.moneda),
+                    )}
+                  </Text>
+                  <Text style={styles.resumenTexto}>
+                    Cuotas faltantes:{" "}
+                    {calcularCuotasFaltantes(prestamoSeleccionado)}
+                  </Text>
+                  {obtenerProximaFechaCuota(
+                    prestamoSeleccionado,
+                    fechaHoyEfectiva,
+                  ) ? (
+                    <Text style={styles.resumenTexto}>
+                      Próxima cuota programada:{" "}
+                      {obtenerProximaFechaCuota(
+                        prestamoSeleccionado,
+                        fechaHoyEfectiva,
+                      )}
+                    </Text>
+                  ) : null}
+                  <Text style={styles.resumenTexto}>
+                    Fecha local del día: {fechaHoyEfectiva}
+                  </Text>
+                </View>
+              ) : null}
 
-            <Text style={styles.modalLabel}>Moneda del pago:</Text>
-            <View style={styles.monedaRow}>
-              {(
-                [
-                  { key: "COP", label: "Pesos (COP)" },
-                  { key: "USD", label: "Dólares (USD)" },
-                ] as const
-              ).map((m) => (
-                <TouchableOpacity
-                  key={m.key}
+              <Text style={styles.modalLabel}>Moneda del pago:</Text>
+              <View style={styles.monedaRow}>
+                {(
+                  [
+                    { key: "COP", label: "Pesos (COP)" },
+                    { key: "USD", label: "Dólares (USD)" },
+                  ] as const
+                ).map((m) => (
+                  <TouchableOpacity
+                    key={m.key}
+                    style={[
+                      styles.monedaChip,
+                      monedaPago === m.key && styles.monedaChipActivo,
+                    ]}
+                    onPress={() => setMonedaPago(m.key)}
+                  >
+                    <Text
+                      style={[
+                        styles.monedaChipTexto,
+                        monedaPago === m.key && styles.monedaChipTextoActivo,
+                      ]}
+                    >
+                      {m.label}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+
+              <Text style={styles.modalLabel}>
+                Monto pagado ({monedaPago === "USD" ? "US$" : "$"}):
+              </Text>
+              <TextInput
+                style={styles.input}
+                keyboardType="number-pad"
+                value={montoPagado}
+                onChangeText={handleMontoChange}
+                placeholder="Ej: 15.000"
+              />
+
+              <Text style={styles.modalLabel}>
+                Fecha manual opcional de tarjeta (YYYY-MM-DD):
+              </Text>
+              <TextInput
+                style={styles.input}
+                value={fechaTarjetaOpcional}
+                onChangeText={setFechaTarjetaOpcional}
+                placeholder={`Opcional (por defecto ${fechaHoyEfectiva})`}
+                maxLength={10}
+              />
+
+              {mensajeModal ? (
+                <View
                   style={[
-                    styles.monedaChip,
-                    monedaPago === m.key && styles.monedaChipActivo,
+                    styles.bannerMensaje,
+                    mensajeModal.tipo === "exito"
+                      ? styles.bannerExito
+                      : styles.bannerError,
                   ]}
-                  onPress={() => setMonedaPago(m.key)}
                 >
                   <Text
                     style={[
-                      styles.monedaChipTexto,
-                      monedaPago === m.key && styles.monedaChipTextoActivo,
+                      styles.bannerTexto,
+                      mensajeModal.tipo === "exito"
+                        ? styles.textoExito
+                        : styles.textoError,
                     ]}
                   >
-                    {m.label}
+                    {mensajeModal.texto}
                   </Text>
-                </TouchableOpacity>
-              ))}
-            </View>
+                </View>
+              ) : null}
 
-            <Text style={styles.modalLabel}>
-              Monto pagado ({monedaPago === "USD" ? "US$" : "$"}):
-            </Text>
-            <TextInput
-              style={styles.input}
-              keyboardType="number-pad"
-              value={montoPagado}
-              onChangeText={handleMontoChange}
-              placeholder="Ej: 15.000"
-            />
-
-            <Text style={styles.modalLabel}>
-              Fecha manual opcional de tarjeta (YYYY-MM-DD):
-            </Text>
-            <TextInput
-              style={styles.input}
-              value={fechaTarjetaOpcional}
-              onChangeText={setFechaTarjetaOpcional}
-              placeholder={`Opcional (por defecto ${fechaHoyEfectiva})`}
-              maxLength={10}
-            />
-
-            {mensajeModal ? (
-              <View
-                style={[
-                  styles.bannerMensaje,
-                  mensajeModal.tipo === "exito"
-                    ? styles.bannerExito
-                    : styles.bannerError,
-                ]}
-              >
-                <Text
-                  style={[
-                    styles.bannerTexto,
-                    mensajeModal.tipo === "exito"
-                      ? styles.textoExito
-                      : styles.textoError,
-                  ]}
+              <View style={styles.modalActions}>
+                <TouchableOpacity
+                  style={styles.btnCancelar}
+                  onPress={cerrarModalPago}
                 >
-                  {mensajeModal.texto}
-                </Text>
+                  <Text style={styles.btnCancelarTexto}>Cerrar</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.btnGuardar}
+                  onPress={() => void guardarPago()}
+                >
+                  <Text style={styles.btnGuardarTexto}>Guardar Pago</Text>
+                </TouchableOpacity>
               </View>
-            ) : null}
-
-            <View style={styles.modalActions}>
-              <TouchableOpacity
-                style={styles.btnCancelar}
-                onPress={cerrarModalPago}
-              >
-                <Text style={styles.btnCancelarTexto}>Cerrar</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity style={styles.btnGuardar} onPress={guardarPago}>
-                <Text style={styles.btnGuardarTexto}>Guardar Pago</Text>
-              </TouchableOpacity>
-            </View>
+            </ScrollView>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
 
       {/* Modal de tasa diaria cuando la moneda del pago difiere de la del préstamo */}
@@ -979,106 +1011,119 @@ export default function RegistrarPagoScreen() {
         animationType="fade"
         onRequestClose={cerrarModalTasa}
       >
-        <View style={styles.modalOverlay}>
+        <KeyboardAvoidingView
+          style={styles.modalOverlay}
+          behavior={Platform.OS === "ios" ? "padding" : "height"}
+        >
           <View style={styles.modalCard}>
-            <Text style={styles.modalTitulo}>Tasa Diaria de Conversión</Text>
+            <ScrollView
+              showsVerticalScrollIndicator
+              keyboardShouldPersistTaps="handled"
+              contentContainerStyle={styles.modalScrollContent}
+            >
+              <Text style={styles.modalTitulo}>Tasa Diaria de Conversión</Text>
 
-            {pagoPendienteTasa ? (
-              <View style={styles.resumenPrestamo}>
-                <Text style={styles.resumenTexto}>
-                  Préstamo #{pagoPendienteTasa.prestamo.id} (
-                  {pagoPendienteTasa.prestamo.cliente_nombre}) en{" "}
-                  {pagoPendienteTasa.monedaPrestamo}
-                </Text>
-                <Text style={styles.resumenTexto}>
-                  Monto ingresado en {pagoPendienteTasa.monedaPago}:{" "}
-                  {formatearMontoPorMoneda(
-                    pagoPendienteTasa.montoPagoIngresado,
-                    pagoPendienteTasa.monedaPago,
-                  )}
-                </Text>
-                <Text style={styles.resumenTexto}>
-                  Saldo actual en {pagoPendienteTasa.monedaPrestamo}:{" "}
-                  {formatearMontoPorMoneda(
-                    pagoPendienteTasa.prestamo.saldo_pendiente,
-                    pagoPendienteTasa.monedaPrestamo,
-                  )}
-                </Text>
+              {pagoPendienteTasa ? (
+                <View style={styles.resumenPrestamo}>
+                  <Text style={styles.resumenTexto}>
+                    Cliente: {pagoPendienteTasa.prestamo.cliente_nombre} (#
+                    {pagoPendienteTasa.prestamo.id})
+                  </Text>
+                  <Text style={styles.resumenTexto}>
+                    Monto pagado:{" "}
+                    {formatearMontoPorMoneda(
+                      pagoPendienteTasa.montoPagoIngresado,
+                      pagoPendienteTasa.monedaPago,
+                    )}
+                  </Text>
+                  <Text style={styles.resumenTexto}>
+                    Moneda del préstamo: {pagoPendienteTasa.monedaPrestamo}
+                  </Text>
+                  <Text style={styles.resumenTexto}>
+                    Equivalente a descontar:{" "}
+                    {formatearMontoPorMoneda(
+                      calculoConversionTasa.montoEnMonedaPrestamo,
+                      pagoPendienteTasa.monedaPrestamo,
+                    )}
+                  </Text>
+                  <Text style={styles.resumenTexto}>
+                    Nuevo saldo estimado:{" "}
+                    {formatearMontoPorMoneda(
+                      calculoConversionTasa.nuevoSaldo,
+                      pagoPendienteTasa.monedaPrestamo,
+                    )}
+                  </Text>
+                </View>
+              ) : null}
+
+              <Text style={styles.modalLabel}>Tasa diaria:</Text>
+              <TextInput
+                style={styles.input}
+                keyboardType="decimal-pad"
+                value={tasaDiariaInput}
+                onChangeText={setTasaDiariaInput}
+                placeholder="Ej: 4.200"
+              />
+
+              {errorTasa ? (
+                <View style={[styles.bannerMensaje, styles.bannerError]}>
+                  <Text style={[styles.bannerTexto, styles.textoError]}>
+                    {errorTasa}
+                  </Text>
+                </View>
+              ) : null}
+
+              <View style={styles.modalActions}>
+                <TouchableOpacity
+                  style={styles.btnCancelar}
+                  onPress={cerrarModalTasa}
+                  disabled={guardandoTasa}
+                >
+                  <Text style={styles.btnCancelarTexto}>Cancelar</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.btnGuardar}
+                  onPress={() => void confirmarPagoConTasa()}
+                  disabled={guardandoTasa}
+                >
+                  <Text style={styles.btnGuardarTexto}>
+                    {guardandoTasa ? "Guardando..." : "Confirmar"}
+                  </Text>
+                </TouchableOpacity>
               </View>
-            ) : null}
-
-            <Text style={styles.modalLabel}>Tasa diaria (COP por 1 USD):</Text>
-            <TextInput
-              style={styles.input}
-              keyboardType="decimal-pad"
-              value={tasaDiariaInput}
-              onChangeText={(t) =>
-                setTasaDiariaInput(t.replace(/[^0-9.,]/g, ""))
-              }
-              placeholder="Ej: 3100"
-            />
-
-            {pagoPendienteTasa ? (
-              <View style={styles.calculoConversionBox}>
-                <Text style={styles.calculoConversionTexto}>
-                  Se descontará del préstamo ({pagoPendienteTasa.monedaPrestamo}
-                  ):{" "}
-                  {formatearMontoPorMoneda(
-                    calculoConversionTasa.montoEnMonedaPrestamo,
-                    pagoPendienteTasa.monedaPrestamo,
-                  )}
-                </Text>
-                <Text style={styles.calculoConversionTexto}>
-                  Nuevo saldo restante:{" "}
-                  {formatearMontoPorMoneda(
-                    calculoConversionTasa.nuevoSaldo,
-                    pagoPendienteTasa.monedaPrestamo,
-                  )}
-                </Text>
-              </View>
-            ) : null}
-
-            {errorTasa ? (
-              <View style={[styles.bannerMensaje, styles.bannerError]}>
-                <Text style={[styles.bannerTexto, styles.textoError]}>
-                  {errorTasa}
-                </Text>
-              </View>
-            ) : null}
-
-            <View style={styles.modalActions}>
-              <TouchableOpacity
-                style={styles.btnCancelar}
-                onPress={cerrarModalTasa}
-              >
-                <Text style={styles.btnCancelarTexto}>Volver</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={styles.btnGuardar}
-                onPress={confirmarPagoConTasa}
-                disabled={guardandoTasa}
-              >
-                <Text style={styles.btnGuardarTexto}>
-                  {guardandoTasa ? "Aplicando..." : "Aplicar y Guardar"}
-                </Text>
-              </TouchableOpacity>
-            </View>
+            </ScrollView>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
-    </ScrollView>
+    </KeyboardAvoidingView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, padding: 16, backgroundColor: "#F8FAFC" },
+  keyboardWrapper: {
+    flex: 1,
+    backgroundColor: "#F8FAFC",
+  },
+  container: {
+    flex: 1,
+    padding: 16,
+    backgroundColor: "#F8FAFC",
+  },
+  scrollContent: {
+    paddingBottom: 140,
+  },
   filaSuperior: {
     flexDirection: "row",
     gap: 10,
     alignItems: "flex-start",
   },
-  label: { fontSize: 13, fontWeight: "600", color: "#334155", marginTop: 8 },
+  label: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: "#334155",
+    marginTop: 8,
+  },
   buscador: {
     backgroundColor: "#fff",
     borderWidth: 1,
@@ -1097,8 +1142,8 @@ const styles = StyleSheet.create({
   },
   filtroChip: {
     paddingVertical: 7,
-    paddingHorizontal: 13,
-    borderRadius: 8,
+    paddingHorizontal: 12,
+    borderRadius: 999,
     borderWidth: 1,
     borderColor: "#CBD5E1",
     backgroundColor: "#fff",
@@ -1134,23 +1179,32 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     textAlign: "center",
   },
-  textoExito: { color: "#14532D" },
-  textoError: { color: "#DC2626" },
-  listaPrestamos: { marginTop: 8, gap: 8, paddingBottom: 24 },
+  textoExito: {
+    color: "#14532D",
+  },
+  textoError: {
+    color: "#DC2626",
+  },
+  listaPrestamos: {
+    marginTop: 8,
+    gap: 8,
+    paddingBottom: 24,
+  },
   itemCard: {
     backgroundColor: "#fff",
     padding: 12,
     borderRadius: 8,
     borderWidth: 1,
     borderColor: "#E2E8F0",
+    marginTop: 8,
   },
   itemCardPagadoHoy: {
     backgroundColor: "#DCFCE7",
     borderColor: "#16A34A",
   },
   itemCardMora: {
+    backgroundColor: "#FEF2F2",
     borderColor: "#DC2626",
-    backgroundColor: "#FFF5F5",
   },
   itemRow: {
     flexDirection: "row",
@@ -1163,42 +1217,62 @@ const styles = StyleSheet.create({
     flexWrap: "wrap",
     gap: 8,
   },
-  itemTitle: { fontSize: 15, fontWeight: "bold", color: "#0F172A" },
-  textoPagadoHoy: { color: "#14532D" },
+  itemTitle: {
+    fontSize: 15,
+    fontWeight: "bold",
+    color: "#0F172A",
+  },
+  textoPagadoHoy: {
+    color: "#14532D",
+  },
   itemFechaRegistro: {
     fontSize: 12,
     fontWeight: "700",
-    color: "#0F172A",
-    marginTop: 2,
+    color: "#1E293B",
+    marginTop: 3,
   },
   textoNormalSinNegrita: {
     fontWeight: "400",
-    color: "#353638",
   },
-  itemSub: { fontSize: 12, color: "#353638", marginTop: 2 },
+  itemSub: {
+    fontSize: 12,
+    color: "#475569",
+    marginTop: 2,
+  },
   itemDetalleCuotas: {
     fontSize: 12,
     fontWeight: "600",
-    color: "#1f2733",
+    color: "#334155",
     marginTop: 2,
   },
   proximaCuotaTexto: {
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: "600",
-    color: "#002897",
+    color: "#1D4ED8",
     marginTop: 2,
   },
   moraLetras: {
-    fontSize: 11,
-    fontWeight: "800",
-    color: "#DC2626",
+    fontSize: 12,
+    fontWeight: "900",
+    color: "#B91C1C",
     marginTop: 4,
     letterSpacing: 0.3,
   },
+  btnPagarItem: {
+    backgroundColor: "#16A34A",
+    paddingVertical: 5,
+    paddingHorizontal: 11,
+    borderRadius: 6,
+  },
+  btnPagarItemTexto: {
+    color: "#fff",
+    fontWeight: "700",
+    fontSize: 12,
+  },
   badgePagado: {
-    backgroundColor: "#074a1f",
-    paddingHorizontal: 9,
-    paddingVertical: 4,
+    backgroundColor: "#16A34A",
+    paddingHorizontal: 8,
+    paddingVertical: 2,
     borderRadius: 999,
   },
   badgeTexto: {
@@ -1206,18 +1280,11 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: "700",
   },
-  btnPagarItem: {
-    backgroundColor: "#16A34A",
-    paddingVertical: 9,
-    paddingHorizontal: 13,
-    borderRadius: 8,
+  vacio: {
+    color: "#64748B",
+    fontStyle: "italic",
+    marginTop: 10,
   },
-  btnPagarItemTexto: {
-    color: "#fff",
-    fontWeight: "700",
-    fontSize: 13,
-  },
-  vacio: { color: "#64748B", fontStyle: "italic", marginTop: 6 },
   modalOverlay: {
     flex: 1,
     backgroundColor: "rgba(15, 23, 42, 0.55)",
@@ -1227,11 +1294,15 @@ const styles = StyleSheet.create({
   },
   modalCard: {
     width: "100%",
-    maxWidth: 450,
+    maxWidth: 460,
+    maxHeight: "88%",
     backgroundColor: "#fff",
     borderRadius: 12,
     padding: 20,
     elevation: 5,
+  },
+  modalScrollContent: {
+    paddingBottom: 32,
   },
   modalTitulo: {
     fontSize: 17,
@@ -1250,6 +1321,12 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: "600",
     color: "#1E293B",
+  },
+  modalLabel: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: "#334155",
+    marginTop: 10,
   },
   monedaRow: {
     flexDirection: "row",
@@ -1277,26 +1354,6 @@ const styles = StyleSheet.create({
   },
   monedaChipTextoActivo: {
     color: "#fff",
-  },
-  calculoConversionBox: {
-    backgroundColor: "#EFF6FF",
-    borderColor: "#BFDBFE",
-    borderWidth: 1,
-    borderRadius: 8,
-    padding: 10,
-    marginTop: 10,
-    gap: 3,
-  },
-  calculoConversionTexto: {
-    fontSize: 13,
-    fontWeight: "700",
-    color: "#1E3A8A",
-  },
-  modalLabel: {
-    fontSize: 13,
-    fontWeight: "600",
-    color: "#334155",
-    marginTop: 10,
   },
   input: {
     backgroundColor: "#fff",
