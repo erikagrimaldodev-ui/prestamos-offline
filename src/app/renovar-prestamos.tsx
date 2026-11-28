@@ -4,11 +4,13 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
+  FlatList,
   ScrollView,
   Modal,
   KeyboardAvoidingView,
   Platform,
   StyleSheet,
+  useWindowDimensions,
 } from "react-native";
 import { useFocusEffect, useLocalSearchParams } from "expo-router";
 import { getAllRows, getFirstRow, runQuery } from "../../database/db";
@@ -217,9 +219,31 @@ const formatearMontoParaInput = (
   moneda: Moneda,
 ): string => {
   if (moneda === "USD") {
-    return formatearDecimalUsd(valor);
+    const num = Number(valor ?? 0);
+    if (Number.isNaN(num) || num <= 0) return "";
+    const fijo = num.toFixed(1);
+    return fijo.endsWith(".0") ? fijo.slice(0, -2) : fijo;
   }
   return formatearMilesEntero(valor);
+};
+
+const parseMontoPorMoneda = (texto: string, moneda: Moneda): number => {
+  if (moneda === "COP") {
+    const soloDigitos = texto.replace(/[^0-9]/g, "");
+    if (!soloDigitos) return 0;
+    const numero = parseInt(soloDigitos, 10);
+    return Number.isNaN(numero) ? 0 : numero;
+  }
+
+  let limpio = texto.trim();
+  if (!limpio) return 0;
+  if (limpio.includes(",") && limpio.includes(".")) {
+    limpio = limpio.replace(/\./g, "").replace(",", ".");
+  } else if (limpio.includes(",")) {
+    limpio = limpio.replace(",", ".");
+  }
+  const numero = parseFloat(limpio);
+  return Number.isNaN(numero) ? 0 : numero;
 };
 
 const formatearInputPorMoneda = (texto: string, moneda: Moneda): string => {
@@ -245,20 +269,6 @@ const formatearInputPorMoneda = (texto: string, moneda: Moneda): string => {
     }
   }
   return limpio;
-};
-
-const parseMontoPorMoneda = (texto: string, moneda: Moneda): number => {
-  if (moneda === "COP") {
-    const soloDigitos = texto.replace(/[^0-9]/g, "");
-    if (!soloDigitos) return 0;
-    const numero = parseInt(soloDigitos, 10);
-    return Number.isNaN(numero) ? 0 : numero;
-  }
-
-  const limpio = texto.trim().replace(",", ".");
-  if (!limpio) return 0;
-  const numero = parseFloat(limpio);
-  return Number.isNaN(numero) ? 0 : numero;
 };
 
 const obtenerFechaLocalHoy = (): string => {
@@ -308,6 +318,8 @@ const registrarDescuentoCajaRenovacion = async (
 };
 
 export default function RenovarPrestamosScreen() {
+  const { width } = useWindowDimensions();
+  const esPantallaAncha = width >= 640;
   const params = useLocalSearchParams<{ prestamoId?: string }>();
 
   const [prestamosActivos, setPrestamosActivos] = useState<PrestamoActivo[]>(
@@ -786,384 +798,368 @@ export default function RenovarPrestamosScreen() {
     }
   };
 
+  const renderHeaderLista = () => (
+    <View style={styles.contentWrapper}>
+      <View
+        style={[styles.filaSuperior, !esPantallaAncha && styles.filaColumna]}
+      >
+        <View style={styles.cajaBuscador}>
+          <Text style={styles.label}>Buscar cliente por nombre:</Text>
+          <TextInput
+            style={styles.buscador}
+            placeholder="Escribe el nombre del cliente..."
+            value={busqueda}
+            onChangeText={setBusqueda}
+          />
+        </View>
+      </View>
+
+      {mensaje ? (
+        <View
+          style={[
+            styles.bannerMensaje,
+            mensaje.tipo === "exito" ? styles.bannerExito : styles.bannerError,
+          ]}
+        >
+          <Text
+            style={[
+              styles.bannerTexto,
+              mensaje.tipo === "exito" ? styles.textoExito : styles.textoError,
+            ]}
+          >
+            {mensaje.texto}
+          </Text>
+        </View>
+      ) : null}
+
+      <Text style={styles.label}>
+        Préstamos activos ({prestamosFiltrados.length}) • Marca &quot;Renovado
+        hoy&quot; (fecha local): {fechaHoyEfectiva}
+      </Text>
+    </View>
+  );
+
+  const renderItemPrestamo = ({ item }: { item: PrestamoActivo }) => {
+    const renovadoHoy =
+      item.renovado_hoy === 1 || renovadosHoyIds.includes(item.id);
+    const monedaItem = normalizarMoneda(item.moneda);
+    const montoPrestadoMostrar = item.monto_prestado ?? item.saldo_pendiente;
+    const montoTotalMostrar = item.monto_total ?? item.saldo_pendiente;
+    const interesMostrar = item.interes_porcentaje ?? 0;
+    const fechaPrestamoMostrar = (item.fecha_creacion || "").slice(0, 10);
+    const moraItem = calcularInfoMora(item, fechaHoyEfectiva);
+
+    return (
+      <TouchableOpacity
+        style={[
+          styles.itemCard,
+          renovadoHoy && styles.itemCardRenovadoHoy,
+          !renovadoHoy && moraItem.estaMoroso && styles.itemCardMora,
+        ]}
+        onPress={() => abrirModalRenovar(item)}
+      >
+        <View
+          style={[styles.itemRow, !esPantallaAncha && styles.itemRowColumna]}
+        >
+          <View style={styles.itemInfoCol}>
+            <View style={styles.itemHeader}>
+              <Text
+                style={[
+                  styles.itemTitle,
+                  renovadoHoy && styles.textoRenovadoHoy,
+                ]}
+              >
+                {item.cliente_nombre} (#{item.id}) • Monto prestado:{" "}
+                {formatearMontoPorMoneda(montoPrestadoMostrar, monedaItem)} -
+                Moneda: {monedaItem}
+              </Text>
+              {renovadoHoy ? (
+                <View style={styles.badgeRenovado}>
+                  <Text style={styles.badgeTexto}>Renovado hoy</Text>
+                </View>
+              ) : null}
+            </View>
+
+            <Text style={styles.itemLineaSecundaria}>
+              Fecha del préstamo: {fechaPrestamoMostrar || "—"} | Interés:{" "}
+              {interesMostrar}% | Monto total:{" "}
+              {formatearMontoPorMoneda(montoTotalMostrar, monedaItem)}
+            </Text>
+
+            <Text style={styles.itemSub}>
+              Saldo pendiente:{" "}
+              {formatearMontoPorMoneda(item.saldo_pendiente, monedaItem)} |
+              Cuota ({item.frecuencia}):{" "}
+              {formatearMontoPorMoneda(item.valor_cuota, monedaItem)}
+            </Text>
+
+            {moraItem.estaMoroso ? (
+              <Text style={styles.alertaMoraTexto}>⚠️ {moraItem.mensaje}</Text>
+            ) : null}
+          </View>
+
+          <TouchableOpacity
+            style={[
+              styles.btnRenovarItem,
+              !esPantallaAncha && styles.btnRenovarFull,
+            ]}
+            onPress={() => abrirModalRenovar(item)}
+          >
+            <Text style={styles.btnAccionTexto}>Renovar</Text>
+          </TouchableOpacity>
+        </View>
+      </TouchableOpacity>
+    );
+  };
+
   return (
     <KeyboardAvoidingView
       style={styles.keyboardWrapper}
       behavior={Platform.OS === "ios" ? "padding" : "height"}
+      keyboardVerticalOffset={Platform.OS === "ios" ? 64 : 0}
     >
-      <ScrollView
+      <FlatList
         style={styles.container}
         contentContainerStyle={styles.scrollContent}
+        data={prestamosFiltrados}
+        keyExtractor={(item) => String(item.id)}
+        renderItem={renderItemPrestamo}
+        ListHeaderComponent={renderHeaderLista()}
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator
-      >
-        <View style={styles.filaSuperior}>
-          <View style={styles.cajaBuscador}>
-            <Text style={styles.label}>Buscar cliente por nombre:</Text>
-            <TextInput
-              style={styles.buscador}
-              placeholder="Escribe el nombre del cliente..."
-              value={busqueda}
-              onChangeText={setBusqueda}
-            />
-          </View>
-
-          <View style={styles.cajaFechaHoy}>
-            <Text style={styles.label}>Fecha del día (local):</Text>
-            <TextInput
-              style={styles.inputFechaHoy}
-              value={fechaLocalHoy}
-              onChangeText={setFechaLocalHoy}
-              placeholder="YYYY-MM-DD"
-              maxLength={10}
-            />
-          </View>
-        </View>
-
-        {mensaje ? (
-          <View
-            style={[
-              styles.bannerMensaje,
-              mensaje.tipo === "exito"
-                ? styles.bannerExito
-                : styles.bannerError,
-            ]}
-          >
-            <Text
-              style={[
-                styles.bannerTexto,
-                mensaje.tipo === "exito"
-                  ? styles.textoExito
-                  : styles.textoError,
-              ]}
-            >
-              {mensaje.texto}
-            </Text>
-          </View>
-        ) : null}
-
-        <Text style={styles.label}>
-          Préstamos activos ({prestamosFiltrados.length}) • Marca &quot;Renovado
-          hoy&quot; (fecha local): {fechaHoyEfectiva}
-        </Text>
-
-        <View style={styles.listaPrestamos}>
-          {prestamosFiltrados.map((item) => {
-            const renovadoHoy =
-              item.renovado_hoy === 1 || renovadosHoyIds.includes(item.id);
-            const monedaItem = normalizarMoneda(item.moneda);
-            const montoPrestadoMostrar =
-              item.monto_prestado ?? item.saldo_pendiente;
-            const montoTotalMostrar = item.monto_total ?? item.saldo_pendiente;
-            const interesMostrar = item.interes_porcentaje ?? 0;
-            const fechaPrestamoMostrar = (item.fecha_creacion || "").slice(
-              0,
-              10,
-            );
-            const moraItem = calcularInfoMora(item, fechaHoyEfectiva);
-
-            return (
-              <TouchableOpacity
-                key={item.id}
-                style={[
-                  styles.itemCard,
-                  renovadoHoy && styles.itemCardRenovadoHoy,
-                  !renovadoHoy && moraItem.estaMoroso && styles.itemCardMora,
-                ]}
-                onPress={() => abrirModalRenovar(item)}
-              >
-                <View style={styles.itemRow}>
-                  <View style={styles.itemInfoCol}>
-                    <View style={styles.itemHeader}>
-                      <Text
-                        style={[
-                          styles.itemTitle,
-                          renovadoHoy && styles.textoRenovadoHoy,
-                        ]}
-                      >
-                        {item.cliente_nombre} (#{item.id}) • Monto prestado:{" "}
-                        {formatearMontoPorMoneda(
-                          montoPrestadoMostrar,
-                          monedaItem,
-                        )}{" "}
-                        - Moneda: {monedaItem}
-                      </Text>
-                      {renovadoHoy ? (
-                        <View style={styles.badgeRenovado}>
-                          <Text style={styles.badgeTexto}>Renovado hoy</Text>
-                        </View>
-                      ) : null}
-                    </View>
-
-                    <Text style={styles.itemLineaSecundaria}>
-                      Fecha del préstamo: {fechaPrestamoMostrar || "—"} |
-                      Interés: {interesMostrar}% | Monto total:{" "}
-                      {formatearMontoPorMoneda(montoTotalMostrar, monedaItem)}
-                    </Text>
-
-                    <Text style={styles.itemSub}>
-                      Saldo pendiente:{" "}
-                      {formatearMontoPorMoneda(
-                        item.saldo_pendiente,
-                        monedaItem,
-                      )}{" "}
-                      | Cuota ({item.frecuencia}):{" "}
-                      {formatearMontoPorMoneda(item.valor_cuota, monedaItem)}
-                    </Text>
-
-                    {moraItem.estaMoroso ? (
-                      <Text style={styles.alertaMoraTexto}>
-                        ⚠️ {moraItem.mensaje}
-                      </Text>
-                    ) : null}
-                  </View>
-
-                  <TouchableOpacity
-                    style={styles.btnRenovarItem}
-                    onPress={() => abrirModalRenovar(item)}
-                  >
-                    <Text style={styles.btnAccionTexto}>Renovar</Text>
-                  </TouchableOpacity>
-                </View>
-              </TouchableOpacity>
-            );
-          })}
-
-          {prestamosFiltrados.length === 0 && (
+        ListEmptyComponent={
+          <View style={styles.contentWrapper}>
             <Text style={styles.vacio}>
               {busqueda.trim()
                 ? "No se encontraron préstamos activos para ese nombre."
                 : "No hay préstamos activos para renovar."}
             </Text>
-          )}
-        </View>
+          </View>
+        }
+      />
 
-        <Modal
-          visible={modalRenovarVisible}
-          transparent
-          animationType="fade"
-          onRequestClose={cerrarModalRenovar}
+      <Modal
+        visible={modalRenovarVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={cerrarModalRenovar}
+      >
+        <KeyboardAvoidingView
+          style={styles.modalOverlay}
+          behavior={Platform.OS === "ios" ? "padding" : "height"}
+          keyboardVerticalOffset={Platform.OS === "ios" ? 24 : 0}
         >
-          <View style={styles.modalOverlay}>
-            <View style={styles.modalCard}>
-              <ScrollView
-                showsVerticalScrollIndicator={false}
-                keyboardShouldPersistTaps="handled"
-              >
-                <Text style={styles.modalTitulo}>
-                  Renovar Préstamo — {prestamoSeleccionado?.cliente_nombre} (#
-                  {prestamoSeleccionado?.id})
-                </Text>
+          <View style={styles.modalCard}>
+            <ScrollView
+              showsVerticalScrollIndicator
+              keyboardShouldPersistTaps="handled"
+              contentContainerStyle={styles.modalScrollContent}
+            >
+              <Text style={styles.modalTitulo}>
+                Renovar Préstamo — {prestamoSeleccionado?.cliente_nombre} (#
+                {prestamoSeleccionado?.id})
+              </Text>
 
-                {moraModal.estaMoroso ? (
-                  <View style={styles.alertaMoraModal}>
-                    <Text style={styles.alertaMoraModalTexto}>
-                      ⚠️ {moraModal.mensaje}
-                    </Text>
-                  </View>
-                ) : null}
+              {moraModal.estaMoroso ? (
+                <View style={styles.alertaMoraModal}>
+                  <Text style={styles.alertaMoraModalTexto}>
+                    ⚠️ {moraModal.mensaje}
+                  </Text>
+                </View>
+              ) : null}
 
-                {prestamoSeleccionado ? (
-                  <View style={styles.resumenPrestamo}>
-                    <Text style={styles.resumenTexto}>
-                      Moneda del préstamo: {monedaActiva}
-                    </Text>
-                    <Text style={styles.resumenTexto}>
-                      Capital anterior:{" "}
-                      {formatearMontoPorMoneda(
-                        prestamoSeleccionado.monto_prestado ??
-                          prestamoSeleccionado.saldo_pendiente,
-                        monedaActiva,
-                      )}
-                    </Text>
-                    <Text style={styles.resumenTexto}>
-                      Saldo pendiente actual:{" "}
-                      {formatearMontoPorMoneda(
+              {prestamoSeleccionado ? (
+                <View style={styles.resumenPrestamo}>
+                  <Text style={styles.resumenTexto}>
+                    Moneda del préstamo: {monedaActiva}
+                  </Text>
+                  <Text style={styles.resumenTexto}>
+                    Capital anterior:{" "}
+                    {formatearMontoPorMoneda(
+                      prestamoSeleccionado.monto_prestado ??
                         prestamoSeleccionado.saldo_pendiente,
-                        monedaActiva,
-                      )}
-                    </Text>
-                    <Text style={styles.resumenTexto}>
-                      Disponible / recuperado anterior:{" "}
-                      {formatearMontoPorMoneda(
-                        calculoRenovacion.capitalRecuperadoAnterior,
-                        monedaActiva,
-                      )}
-                    </Text>
-                    <Text style={styles.resumenTexto}>
-                      Frecuencia anterior: {prestamoSeleccionado.frecuencia}
-                    </Text>
-                    <Text style={styles.resumenTexto}>
-                      Fecha local del día: {fechaHoyEfectiva}
-                    </Text>
-                  </View>
-                ) : null}
+                      monedaActiva,
+                    )}
+                  </Text>
+                  <Text style={styles.resumenTexto}>
+                    Saldo pendiente actual:{" "}
+                    {formatearMontoPorMoneda(
+                      prestamoSeleccionado.saldo_pendiente,
+                      monedaActiva,
+                    )}
+                  </Text>
+                  <Text style={styles.resumenTexto}>
+                    Disponible / recuperado anterior:{" "}
+                    {formatearMontoPorMoneda(
+                      calculoRenovacion.capitalRecuperadoAnterior,
+                      monedaActiva,
+                    )}
+                  </Text>
+                  <Text style={styles.resumenTexto}>
+                    Frecuencia anterior: {prestamoSeleccionado.frecuencia}
+                  </Text>
+                  <Text style={styles.resumenTexto}>
+                    Fecha local del día: {fechaHoyEfectiva}
+                  </Text>
+                </View>
+              ) : null}
 
-                <Text style={styles.modalLabel}>
-                  Monto del nuevo préstamo (
-                  {monedaActiva === "USD" ? "US$" : "$"}):
-                </Text>
-                <TextInput
-                  style={styles.input}
-                  keyboardType={
-                    monedaActiva === "USD" ? "decimal-pad" : "number-pad"
-                  }
-                  value={montoBaseInput}
-                  onChangeText={(texto) =>
-                    setMontoBaseInput(
-                      formatearInputPorMoneda(texto, monedaActiva),
-                    )
-                  }
-                  placeholder={
-                    monedaActiva === "USD" ? "Ej: 100" : "Ej: 400.000"
-                  }
-                />
+              <Text style={styles.modalLabel}>
+                Monto del nuevo préstamo ({monedaActiva === "USD" ? "US$" : "$"}
+                ):
+              </Text>
+              <TextInput
+                style={styles.input}
+                keyboardType={
+                  monedaActiva === "USD" ? "decimal-pad" : "number-pad"
+                }
+                value={montoBaseInput}
+                onChangeText={(texto) =>
+                  setMontoBaseInput(
+                    formatearInputPorMoneda(texto, monedaActiva),
+                  )
+                }
+                placeholder={monedaActiva === "USD" ? "Ej: 100" : "Ej: 400.000"}
+              />
 
-                <Text style={styles.modalLabel}>Interés (%):</Text>
-                <TextInput
-                  style={styles.input}
-                  keyboardType="decimal-pad"
-                  value={interesInput}
-                  onChangeText={handleDecimalChange(setInteresInput)}
-                  placeholder="Ej: 20"
-                />
+              <Text style={styles.modalLabel}>Interés (%):</Text>
+              <TextInput
+                style={styles.input}
+                keyboardType="decimal-pad"
+                value={interesInput}
+                onChangeText={handleDecimalChange(setInteresInput)}
+                placeholder="Ej: 20"
+              />
 
-                <Text style={styles.modalLabel}>Frecuencia de pago:</Text>
-                <View style={styles.frecuenciaRow}>
-                  {FRECUENCIAS.map((freq) => {
-                    const activa = frecuencia === freq;
-                    return (
-                      <TouchableOpacity
-                        key={freq}
+              <Text style={styles.modalLabel}>Frecuencia de pago:</Text>
+              <View style={styles.frecuenciaRow}>
+                {FRECUENCIAS.map((freq) => {
+                  const activa = frecuencia === freq;
+                  return (
+                    <TouchableOpacity
+                      key={freq}
+                      style={[
+                        styles.frecuenciaBtn,
+                        activa && styles.frecuenciaBtnActiva,
+                      ]}
+                      onPress={() => seleccionarFrecuencia(freq)}
+                    >
+                      <Text
                         style={[
-                          styles.frecuenciaBtn,
-                          activa && styles.frecuenciaBtnActiva,
+                          styles.frecuenciaTexto,
+                          activa && styles.frecuenciaTextoActivo,
                         ]}
-                        onPress={() => seleccionarFrecuencia(freq)}
                       >
-                        <Text
-                          style={[
-                            styles.frecuenciaTexto,
-                            activa && styles.frecuenciaTextoActivo,
-                          ]}
-                        >
-                          {freq}
-                        </Text>
-                      </TouchableOpacity>
-                    );
-                  })}
-                </View>
+                        {freq}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
 
-                <Text style={styles.modalLabel}>
-                  Cantidad de días / cuotas:
+              <Text style={styles.modalLabel}>Cantidad de días / cuotas:</Text>
+              <TextInput
+                style={styles.input}
+                keyboardType="number-pad"
+                value={cantidadCuotasInput}
+                onChangeText={(t) =>
+                  setCantidadCuotasInput(t.replace(/[^0-9]/g, ""))
+                }
+                placeholder="24"
+              />
+
+              <Text style={styles.modalLabel}>
+                Fecha del préstamo (YYYY-MM-DD):
+              </Text>
+              <TextInput
+                style={styles.input}
+                value={fechaCreacion}
+                onChangeText={setFechaCreacion}
+                placeholder="YYYY-MM-DD"
+                maxLength={10}
+              />
+
+              <View style={styles.calculoBox}>
+                <Text style={styles.calculoTexto}>Moneda: {monedaActiva}</Text>
+                <Text style={styles.calculoTexto}>
+                  Nuevo monto prestado:{" "}
+                  {formatearMontoPorMoneda(
+                    calculoRenovacion.nuevoMontoPrestado,
+                    monedaActiva,
+                  )}
                 </Text>
-                <TextInput
-                  style={styles.input}
-                  keyboardType="number-pad"
-                  value={cantidadCuotasInput}
-                  onChangeText={(t) =>
-                    setCantidadCuotasInput(t.replace(/[^0-9]/g, ""))
-                  }
-                  placeholder="24"
-                />
-
-                <Text style={styles.modalLabel}>
-                  Fecha del préstamo (YYYY-MM-DD):
+                <Text style={styles.calculoDestacado}>
+                  Efectivo a entregar de caja:{" "}
+                  {formatearMontoPorMoneda(
+                    calculoRenovacion.efectivoEntregarCaja,
+                    monedaActiva,
+                  )}
                 </Text>
-                <TextInput
-                  style={styles.input}
-                  value={fechaCreacion}
-                  onChangeText={setFechaCreacion}
-                  placeholder="YYYY-MM-DD"
-                  maxLength={10}
-                />
+                <Text style={styles.calculoTexto}>
+                  Interés ({calculoRenovacion.pct}%): +
+                  {formatearMontoPorMoneda(
+                    calculoRenovacion.montoInteres,
+                    monedaActiva,
+                  )}
+                </Text>
+                <Text style={styles.calculoTexto}>
+                  Monto total nuevo préstamo:{" "}
+                  {formatearMontoPorMoneda(
+                    calculoRenovacion.montoTotal,
+                    monedaActiva,
+                  )}
+                </Text>
+                <Text style={styles.calculoTexto}>
+                  Valor cuota ({frecuencia.toLowerCase()} x{" "}
+                  {calculoRenovacion.cuotas}):{" "}
+                  {formatearMontoPorMoneda(
+                    calculoRenovacion.valorCuota,
+                    monedaActiva,
+                  )}
+                </Text>
+              </View>
 
-                <View style={styles.calculoBox}>
-                  <Text style={styles.calculoTexto}>
-                    Moneda: {monedaActiva}
-                  </Text>
-                  <Text style={styles.calculoTexto}>
-                    Nuevo monto prestado:{" "}
-                    {formatearMontoPorMoneda(
-                      calculoRenovacion.nuevoMontoPrestado,
-                      monedaActiva,
-                    )}
-                  </Text>
-                  <Text style={styles.calculoDestacado}>
-                    Efectivo a entregar de caja:{" "}
-                    {formatearMontoPorMoneda(
-                      calculoRenovacion.efectivoEntregarCaja,
-                      monedaActiva,
-                    )}
-                  </Text>
-                  <Text style={styles.calculoTexto}>
-                    Interés ({calculoRenovacion.pct}%): +
-                    {formatearMontoPorMoneda(
-                      calculoRenovacion.montoInteres,
-                      monedaActiva,
-                    )}
-                  </Text>
-                  <Text style={styles.calculoTexto}>
-                    Monto total nuevo préstamo:{" "}
-                    {formatearMontoPorMoneda(
-                      calculoRenovacion.montoTotal,
-                      monedaActiva,
-                    )}
-                  </Text>
-                  <Text style={styles.calculoTexto}>
-                    Valor cuota ({frecuencia.toLowerCase()} x{" "}
-                    {calculoRenovacion.cuotas}):{" "}
-                    {formatearMontoPorMoneda(
-                      calculoRenovacion.valorCuota,
-                      monedaActiva,
-                    )}
-                  </Text>
-                </View>
-
-                {mensajeModal ? (
-                  <View
+              {mensajeModal ? (
+                <View
+                  style={[
+                    styles.bannerMensaje,
+                    mensajeModal.tipo === "exito"
+                      ? styles.bannerExito
+                      : styles.bannerError,
+                  ]}
+                >
+                  <Text
                     style={[
-                      styles.bannerMensaje,
+                      styles.bannerTexto,
                       mensajeModal.tipo === "exito"
-                        ? styles.bannerExito
-                        : styles.bannerError,
+                        ? styles.textoExito
+                        : styles.textoError,
                     ]}
                   >
-                    <Text
-                      style={[
-                        styles.bannerTexto,
-                        mensajeModal.tipo === "exito"
-                          ? styles.textoExito
-                          : styles.textoError,
-                      ]}
-                    >
-                      {mensajeModal.texto}
-                    </Text>
-                  </View>
-                ) : null}
-
-                <View style={styles.modalActions}>
-                  <TouchableOpacity
-                    style={styles.btnCancelar}
-                    onPress={cerrarModalRenovar}
-                  >
-                    <Text style={styles.btnCancelarTexto}>Cancelar</Text>
-                  </TouchableOpacity>
-
-                  <TouchableOpacity
-                    style={styles.btnGuardar}
-                    onPress={() => void guardarRenovacion()}
-                  >
-                    <Text style={styles.btnGuardarTexto}>
-                      Guardar Renovación
-                    </Text>
-                  </TouchableOpacity>
+                    {mensajeModal.texto}
+                  </Text>
                 </View>
-              </ScrollView>
-            </View>
+              ) : null}
+
+              <View style={styles.modalActions}>
+                <TouchableOpacity
+                  style={styles.btnCancelar}
+                  onPress={cerrarModalRenovar}
+                >
+                  <Text style={styles.btnCancelarTexto}>Cancelar</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.btnGuardar}
+                  onPress={() => void guardarRenovacion()}
+                >
+                  <Text style={styles.btnGuardarTexto}>Guardar Renovación</Text>
+                </TouchableOpacity>
+              </View>
+            </ScrollView>
           </View>
-        </Modal>
-      </ScrollView>
+        </KeyboardAvoidingView>
+      </Modal>
     </KeyboardAvoidingView>
   );
 }
@@ -1175,22 +1171,29 @@ const styles = StyleSheet.create({
   },
   container: {
     flex: 1,
-    padding: 16,
     backgroundColor: "#F8FAFC",
   },
   scrollContent: {
-    paddingBottom: 32,
+    padding: 16,
+    paddingBottom: 140,
+    gap: 8,
+  },
+  contentWrapper: {
+    width: "100%",
+    maxWidth: 860,
+    alignSelf: "center",
   },
   filaSuperior: {
     flexDirection: "row",
     gap: 10,
     alignItems: "flex-start",
   },
+  filaColumna: {
+    flexDirection: "column",
+  },
   cajaBuscador: {
     flex: 1,
-  },
-  cajaFechaHoy: {
-    width: 132,
+    width: "100%",
   },
   label: {
     fontSize: 13,
@@ -1206,16 +1209,6 @@ const styles = StyleSheet.create({
     padding: 11,
     marginTop: 6,
     fontSize: 15,
-  },
-  inputFechaHoy: {
-    backgroundColor: "#fff",
-    borderWidth: 1,
-    borderColor: "#CBD5E1",
-    borderRadius: 8,
-    padding: 11,
-    marginTop: 6,
-    fontSize: 14,
-    textAlign: "center",
   },
   bannerMensaje: {
     marginTop: 10,
@@ -1242,17 +1235,15 @@ const styles = StyleSheet.create({
   textoError: {
     color: "#DC2626",
   },
-  listaPrestamos: {
-    marginTop: 8,
-    gap: 8,
-    paddingBottom: 24,
-  },
   itemCard: {
     backgroundColor: "#fff",
     padding: 12,
     borderRadius: 8,
     borderWidth: 1,
     borderColor: "#E2E8F0",
+    width: "100%",
+    maxWidth: 860,
+    alignSelf: "center",
   },
   itemCardRenovadoHoy: {
     backgroundColor: "#DCFCE7",
@@ -1266,10 +1257,15 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
+    gap: 10,
+  },
+  itemRowColumna: {
+    flexDirection: "column",
+    alignItems: "stretch",
   },
   itemInfoCol: {
     flex: 1,
-    paddingRight: 8,
+    paddingRight: 4,
   },
   itemHeader: {
     flexDirection: "row",
@@ -1281,6 +1277,7 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: "bold",
     color: "#0F172A",
+    flexShrink: 1,
   },
   textoRenovadoHoy: {
     color: "#14532D",
@@ -1318,6 +1315,11 @@ const styles = StyleSheet.create({
     paddingVertical: 9,
     paddingHorizontal: 14,
     borderRadius: 8,
+    alignItems: "center",
+  },
+  btnRenovarFull: {
+    width: "100%",
+    marginTop: 4,
   },
   btnAccionTexto: {
     color: "#fff",
@@ -1334,16 +1336,19 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(15, 23, 42, 0.55)",
     justifyContent: "center",
     alignItems: "center",
-    padding: 18,
+    padding: 16,
   },
   modalCard: {
     width: "100%",
-    maxWidth: 460,
+    maxWidth: 480,
     maxHeight: "90%",
     backgroundColor: "#fff",
     borderRadius: 12,
-    padding: 20,
+    padding: 18,
     elevation: 5,
+  },
+  modalScrollContent: {
+    paddingBottom: 24,
   },
   modalTitulo: {
     fontSize: 17,
@@ -1452,7 +1457,7 @@ const styles = StyleSheet.create({
   btnCancelarTexto: {
     color: "#334155",
     fontWeight: "700",
-    fontSize: 14,
+    fontSize: 12,
   },
   btnGuardar: {
     flex: 1,
@@ -1464,6 +1469,6 @@ const styles = StyleSheet.create({
   btnGuardarTexto: {
     color: "#fff",
     fontWeight: "700",
-    fontSize: 14,
+    fontSize: 12,
   },
 });

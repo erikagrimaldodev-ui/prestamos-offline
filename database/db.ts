@@ -3,6 +3,27 @@ import * as SQLite from "expo-sqlite";
 
 const DB_NAME = "prestamos_app.db";
 
+export type MonedaDB = "COP" | "USD";
+
+export interface RenovarPrestamoInput {
+  prestamoAnteriorId: number;
+  excedenteEntregado: number;
+  nuevoMontoPrestado: number;
+  interesPorcentaje: number;
+  frecuencia: string;
+  cantidadCuotas: number;
+  fechaCreacion: string;
+  moneda?: MonedaDB;
+  nota?: string;
+}
+
+interface PrestamoRenovacionRow {
+  id: number;
+  cliente_id: number;
+  saldo_pendiente: number;
+  moneda?: string | null;
+}
+
 const SCHEMA_SQL = `
   PRAGMA foreign_keys = ON;
 
@@ -48,6 +69,22 @@ const SCHEMA_SQL = `
     monto REAL NOT NULL,
     fecha TEXT NOT NULL,
     moneda TEXT DEFAULT 'COP'
+  );
+
+  CREATE TABLE IF NOT EXISTS renovaciones (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    prestamo_anterior_id INTEGER NOT NULL,
+    prestamo_nuevo_id INTEGER NOT NULL,
+    cliente_id INTEGER NOT NULL,
+    saldo_anterior REAL NOT NULL DEFAULT 0,
+    excedente_entregado REAL NOT NULL DEFAULT 0,
+    nuevo_monto_prestado REAL NOT NULL,
+    fecha TEXT NOT NULL,
+    moneda TEXT DEFAULT 'COP',
+    nota TEXT,
+    FOREIGN KEY (prestamo_anterior_id) REFERENCES prestamos (id),
+    FOREIGN KEY (prestamo_nuevo_id) REFERENCES prestamos (id),
+    FOREIGN KEY (cliente_id) REFERENCES clientes (id)
   );
 `;
 
@@ -123,6 +160,30 @@ export const runQuery = async (
   database.runSync(sql, params);
 };
 
+export const runTransaction = async (
+  callback: () => Promise<void> | void,
+): Promise<void> => {
+  const database = await initDatabase();
+  if (Platform.OS === "web") {
+    await database.withTransactionAsync(async () => {
+      await callback();
+    });
+    return;
+  }
+  database.execSync("BEGIN TRANSACTION;");
+  try {
+    await callback();
+    database.execSync("COMMIT;");
+  } catch (error) {
+    try {
+      database.execSync("ROLLBACK;");
+    } catch {
+      // Ignorar error secundario de rollback
+    }
+    throw error;
+  }
+};
+
 export const getAllRows = async <T>(
   sql: string,
   params: SQLite.SQLiteBindValue[] = [],
@@ -143,4 +204,124 @@ export const getFirstRow = async <T>(
     return database.getFirstAsync<T>(sql, params);
   }
   return database.getFirstSync<T>(sql, params);
+};
+
+export const renovarPrestamo = async (
+  input: RenovarPrestamoInput,
+): Promise<{ prestamoNuevoId: number }> => {
+  const anterior = await getFirstRow<PrestamoRenovacionRow>(
+    `SELECT id, cliente_id, saldo_pendiente, moneda
+     FROM prestamos
+     WHERE id = ?`,
+    [input.prestamoAnteriorId],
+  );
+
+  if (!anterior) {
+    throw new Error("No se encontró el préstamo a renovar.");
+  }
+
+  const excedente = Math.max(0, Number(input.excedenteEntregado || 0));
+  const nuevoCapital = Number(input.nuevoMontoPrestado || 0);
+  const interes = Number(input.interesPorcentaje || 0);
+  const cuotas = Math.max(1, Math.floor(Number(input.cantidadCuotas || 1)));
+
+  if (Number.isNaN(nuevoCapital) || nuevoCapital <= 0) {
+    throw new Error("El nuevo monto prestado debe ser mayor a 0.");
+  }
+
+  const monedaFinal: MonedaDB =
+    input.moneda ||
+    ((anterior.moneda || "").trim().toUpperCase() === "USD" ? "USD" : "COP");
+
+  const saldoAnterior = Math.max(0, Number(anterior.saldo_pendiente || 0));
+  const montoTotal = nuevoCapital + nuevoCapital * (interes / 100);
+  const valorCuota = montoTotal / cuotas;
+
+  let prestamoNuevoId = 0;
+
+  await runTransaction(async () => {
+    // 1. Cerrar préstamo anterior para que su saldo pendiente viejo no duplique cartera
+    await runQuery(
+      `UPDATE prestamos
+       SET saldo_pendiente = 0, estado = 'renovado'
+       WHERE id = ?`,
+      [anterior.id],
+    );
+
+    // 2. Crear el préstamo renovado con el nuevo capital
+    await runQuery(
+      `INSERT INTO prestamos (
+        cliente_id,
+        monto_prestado,
+        interes_porcentaje,
+        frecuencia,
+        cantidad_cuotas,
+        monto_total,
+        valor_cuota,
+        saldo_pendiente,
+        fecha_creacion,
+        estado,
+        moneda
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'activo', ?)`,
+      [
+        anterior.cliente_id,
+        nuevoCapital,
+        interes,
+        input.frecuencia,
+        cuotas,
+        montoTotal,
+        valorCuota,
+        montoTotal,
+        input.fechaCreacion,
+        monedaFinal,
+      ],
+    );
+
+    const filaUltimo = await getFirstRow<{ id: number }>(
+      `SELECT last_insert_rowid() AS id`,
+    );
+    prestamoNuevoId = Number(filaUltimo?.id || 0);
+
+    // 3. Registrar historial de renovación
+    await runQuery(
+      `INSERT INTO renovaciones (
+        prestamo_anterior_id,
+        prestamo_nuevo_id,
+        cliente_id,
+        saldo_anterior,
+        excedente_entregado,
+        nuevo_monto_prestado,
+        fecha,
+        moneda,
+        nota
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        anterior.id,
+        prestamoNuevoId,
+        anterior.cliente_id,
+        saldoAnterior,
+        excedente,
+        nuevoCapital,
+        input.fechaCreacion,
+        monedaFinal,
+        input.nota || null,
+      ],
+    );
+
+    // 4. Si se entregó excedente en efectivo al cliente, restarlo de caja como 'renovacion' (no 'gasto')
+    if (excedente > 0) {
+      await runQuery(
+        `INSERT INTO movimientos_caja (tipo, descripcion, monto, fecha, moneda)
+         VALUES ('renovacion', ?, ?, ?, ?)`,
+        [
+          `Renovación préstamo #${anterior.id} -> #${prestamoNuevoId} (${monedaFinal})`,
+          excedente,
+          input.fechaCreacion,
+          monedaFinal,
+        ],
+      );
+    }
+  });
+
+  return { prestamoNuevoId };
 };

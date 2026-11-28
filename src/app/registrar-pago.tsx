@@ -767,11 +767,10 @@ export default function RegistrarPagoScreen() {
 
             <Text style={styles.itemFechaRegistro}>
               Fecha del préstamo: {fechaRegistroPrestamo}
-              <Text style={styles.textoNormalSinNegrita}>
-                {" "}
-                | Monto total:{" "}
-                {formatearMontoPorMoneda(montoTotalValor, monedaItem)}
-              </Text>
+            </Text>
+            <Text style={styles.itemFechaRegistro}>
+              Monto total:{" "}
+              {formatearMontoPorMoneda(montoTotalValor, monedaItem)}
             </Text>
 
             <Text style={styles.itemSub}>
@@ -813,7 +812,7 @@ export default function RegistrarPagoScreen() {
         data={prestamosFiltrados}
         keyExtractor={(item) => String(item.id)}
         renderItem={renderItemPrestamo}
-        ListHeaderComponent={renderHeaderLista}
+        ListHeaderComponent={renderHeaderLista()}
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator
         ListEmptyComponent={
@@ -1203,7 +1202,7 @@ const styles = StyleSheet.create({
     borderColor: "#16A34A",
   },
   itemCardMora: {
-    backgroundColor: "#FEF2F2",
+    backgroundColor: "#f8f4f4",
     borderColor: "#DC2626",
   },
   itemRow: {

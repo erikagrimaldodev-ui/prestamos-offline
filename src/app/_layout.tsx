@@ -25,20 +25,21 @@ interface MenuItemConfig {
 }
 
 const MENU_ITEMS: MenuItemConfig[] = [
-  { label: "Registrar Cobros", route: "/", icon: "checkmark-circle" },
-  { label: "Registrar Préstamos", route: "/prestar", icon: "cash" },
-  { label: "Renovar Prestamos", route: "/renovar-prestamos", icon: "repeat" },
+  { label: "Resumen General", route: "/caja-gastos", icon: "wallet" },
   {
     label: "Registro de Clientes",
     route: "/registrar-cliente",
     icon: "person-add",
   },
+  { label: "Registrar Préstamos", route: "/prestar", icon: "cash" },
+  { label: "Registrar Cobros", route: "/", icon: "checkmark-circle" },
+  { label: "Renovar Prestamos", route: "/renovar-prestamos", icon: "repeat" },
+  { label: "Resumen del Día", route: "/resumen-dia", icon: "wallet" },
   {
     label: "Lista de Préstamos y Pagos",
     route: "/historial",
     icon: "list",
   },
-  { label: "Caja y Gastos", route: "/caja-gastos", icon: "wallet" },
 ];
 
 interface CustomDrawerContentProps extends DrawerContentComponentProps {
@@ -271,8 +272,12 @@ export default function RootLayout() {
             options={{ title: "Lista de Préstamos y Pagos" }}
           />
           <Drawer.Screen
-            name="caja-gastos"
+            name="resumen-dia"
             options={{ title: "Caja y Gastos Diarios" }}
+          />
+          <Drawer.Screen
+            name="caja-gastos"
+            options={{ title: "Caja y Gastos" }}
           />
           <Drawer.Screen
             name="base-datos"

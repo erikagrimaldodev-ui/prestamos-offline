@@ -683,16 +683,17 @@ export default function HistorialScreen() {
                     {textoRenovacion}
                   </Text>
                 ) : null}
-                <Text style={styles.fecha}>
-                  Fecha: {item.fecha_creacion || "N/A"} • Moneda: {monedaReg} •
-                  Interés: {interesMostrar}%
-                </Text>
                 <Text style={styles.detalle}>
                   Prestado:{" "}
                   {formatearMontoRegistrado(item.monto_prestado, monedaReg)} |
                   Total: {formatearMontoRegistrado(item.monto_total, monedaReg)}{" "}
                   ({item.cantidad_cuotas} {item.frecuencia})
                 </Text>
+                <Text style={styles.fecha}>
+                  Fecha: {item.fecha_creacion || "N/A"} • Moneda: {monedaReg} •
+                  Interés: {interesMostrar}%
+                </Text>
+
                 <Text style={styles.saldo}>
                   Saldo pendiente:{" "}
                   {formatearMontoRegistrado(item.saldo_pendiente, monedaReg)} •{" "}
@@ -746,7 +747,7 @@ export default function HistorialScreen() {
                 <Text style={styles.detalle}>
                   Fecha pago: {item.fecha_pago} • Interés: {interesMostrar}%
                 </Text>
-                <Text style={styles.detallePrestamo}>
+                <Text style={styles.detallePrestamoM}>
                   Monto del Préstamo:{" "}
                   {formatearMontoRegistrado(item.monto_prestado, monedaReg)}
                 </Text>
@@ -769,12 +770,14 @@ export default function HistorialScreen() {
                     onPress={() => abrirModalEditarPago(item)}
                     hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                   >
+                    <Text style={styles.detallePrestamo}></Text>
                     <Text style={styles.btnEditar}>Editar</Text>
                   </TouchableOpacity>
                   <TouchableOpacity
                     onPress={() => setObjetivoEliminar({ kind: "pago", item })}
                     hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                   >
+                    <Text style={styles.detallePrestamo}></Text>
                     <Text style={styles.btnEliminar}>Eliminar</Text>
                   </TouchableOpacity>
                 </View>
@@ -1025,14 +1028,20 @@ const styles = StyleSheet.create({
     gap: 14,
   },
   nombre: { fontSize: 16, fontWeight: "bold", color: "#0F172A" },
-  btnEditar: { fontSize: 14, fontWeight: "700", color: "#1D4ED8" },
+  btnEditar: { fontSize: 14, fontWeight: "700", color: "#1fa440" },
   btnEliminar: { fontSize: 14, fontWeight: "700", color: "#DC2626" },
-  fecha: { fontSize: 13, fontWeight: "600", color: "#475569", marginTop: 2 },
-  detalle: { fontSize: 13, color: "#475569", marginTop: 4 },
+  fecha: { fontSize: 13, fontWeight: "500", color: "#475569", marginTop: 2 },
+  detalle: { fontSize: 13, fontWeight: "600", color: "#36414f", marginTop: 4 },
   detallePrestamo: {
     fontSize: 13,
     fontWeight: "600",
     color: "#334155",
+    marginTop: 4,
+  },
+  detallePrestamoM: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: "#0561e3",
     marginTop: 4,
   },
   saldo: { fontSize: 13, fontWeight: "600", color: "#1E3A8A", marginTop: 4 },
