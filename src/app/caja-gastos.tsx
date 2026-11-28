@@ -150,11 +150,13 @@ export default function ResumenGeneralScreen() {
       listaPrestamos = await getAllRows<PrestamoCajaRow>(`
         SELECT id, cliente_id, monto_prestado, interes_porcentaje, monto_total, saldo_pendiente, fecha_creacion, estado, moneda
         FROM prestamos
+        ORDER BY id ASC
       `);
     } catch {
       listaPrestamos = await getAllRows<PrestamoCajaRow>(`
         SELECT id, cliente_id, monto_prestado, fecha_creacion, estado, moneda
         FROM prestamos
+        ORDER BY id ASC
       `);
     }
 
@@ -198,11 +200,49 @@ export default function ResumenGeneralScreen() {
     }, [cargarDatosGenerales]),
   );
 
+  const ultimoRenovadoPorCliente = useMemo(() => {
+    const mapa = new Map<number, PrestamoCajaRow>();
+    for (const p of prestamos) {
+      const estadoLower = (p.estado || "").trim().toLowerCase();
+      if (estadoLower === "renovado") {
+        mapa.set(p.cliente_id, p);
+      }
+    }
+    return mapa;
+  }, [prestamos]);
+
+  const calcularMontoPrestamoParaCaja = useCallback(
+    (p: PrestamoCajaRow): number => {
+      const montoPrestado = Number(p.monto_prestado || 0);
+      if (Number.isNaN(montoPrestado) || montoPrestado <= 0) return 0;
+
+      const estadoLower = (p.estado || "").trim().toLowerCase();
+      const prevRenovado = ultimoRenovadoPorCliente.get(p.cliente_id);
+      const esRenovacionPosterior =
+        estadoLower !== "renovado" &&
+        prevRenovado !== undefined &&
+        prevRenovado.id < p.id;
+
+      if (esRenovacionPosterior && prevRenovado) {
+        const saldoPrev = Number(prevRenovado.saldo_pendiente ?? 0);
+        const totalPrev = Number(prevRenovado.monto_total ?? saldoPrev);
+        if (saldoPrev <= totalPrev) {
+          return 0;
+        }
+        return Math.max(0, montoPrestado - saldoPrev);
+      }
+
+      return montoPrestado;
+    },
+    [ultimoRenovadoPorCliente],
+  );
+
   const resumenGeneral = useMemo(() => {
     const inicial = {
       dineroEnCalleTotal: 0,
       capitalEnCalleTotal: 0,
       montoCobradoHistorico: 0,
+      montoPrestadoBaseHistorico: 0,
       montoPrestadoHistorico: 0,
       renovacionesHistoricas: 0,
       cantidadRenovaciones: 0,
@@ -245,7 +285,7 @@ export default function ResumenGeneralScreen() {
         !Number.isNaN(montoPrestado) &&
         montoPrestado > 0
       ) {
-        porMoneda[m].montoPrestadoHistorico += montoPrestado;
+        porMoneda[m].montoPrestadoBaseHistorico += montoPrestado;
       }
 
       const esVigenteEnCalle =
@@ -275,11 +315,13 @@ export default function ResumenGeneralScreen() {
 
     for (const m of ["COP", "USD"] as const) {
       const d = porMoneda[m];
+      // Tarjeta Total Préstamos: suma préstamos + renovaciones
+      d.montoPrestadoHistorico =
+        d.montoPrestadoBaseHistorico + d.renovacionesHistoricas;
       d.cajaDisponibleHistorica =
         d.efectivoRecibidoHistorico +
         d.montoCobradoHistorico -
         (d.montoPrestadoHistorico +
-          d.renovacionesHistoricas +
           d.gastosHistoricos +
           d.efectivoEntregadoHistorico);
       d.gananciaProyectadaCalle = Math.max(
@@ -289,7 +331,7 @@ export default function ResumenGeneralScreen() {
     }
 
     return porMoneda;
-  }, [movimientos, prestamos, pagos]);
+  }, [movimientos, prestamos, pagos, calcularMontoPrestamoParaCaja]);
 
   const itemsHistoricos = useMemo<ItemMovimientoGeneral[]>(() => {
     const lista: ItemMovimientoGeneral[] = [];
@@ -302,8 +344,8 @@ export default function ResumenGeneralScreen() {
       const fechaP = normalizarFecha(p.fecha_creacion);
       if (!fechaP) continue;
       const m = normalizarMoneda(p.moneda);
-      const monto = Number(p.monto_prestado || 0);
-      if (Number.isNaN(monto) || monto <= 0) continue;
+      const monto = calcularMontoPrestamoParaCaja(p);
+      if (monto <= 0) continue;
       const clave = `${fechaP}__${m}`;
       prestamosPorFechaMoneda.set(
         clave,
@@ -366,10 +408,10 @@ export default function ResumenGeneralScreen() {
         esResumenCierre: false,
         esRenovacion: esRenov,
         descripcion: esRenov
-          ? `[Renovación] ${mov.descripcion}`
+          ? `[Excedente renovación en efectivo] ${mov.descripcion}`
           : mov.descripcion,
         subtitulo: esRenov
-          ? `${fechaMov || mov.fecha} • Sale de caja`
+          ? `${fechaMov || mov.fecha} • Sale de caja (excedente efectivo)`
           : fechaMov || mov.fecha,
         fechaOrden: fechaMov,
         monto: Number(mov.monto || 0),
@@ -391,7 +433,7 @@ export default function ResumenGeneralScreen() {
       return lista.filter((item) => item.esRenovacion);
     }
     return lista;
-  }, [prestamos, pagos, movimientos, filtroMov]);
+  }, [prestamos, pagos, movimientos, filtroMov, calcularMontoPrestamoParaCaja]);
 
   const eliminarMovimiento = async (id: number) => {
     try {
@@ -529,8 +571,21 @@ export default function ResumenGeneralScreen() {
             )}
           </Text>
           <Text style={styles.subLineaCartera}>
-            Renovaciones ({resumenGeneral.COP.cantidadRenovaciones} COP /{" "}
-            {resumenGeneral.USD.cantidadRenovaciones} USD):{" "}
+            Préstamos:{" "}
+            {formatearMontoMoneda(
+              resumenGeneral.COP.montoPrestadoBaseHistorico,
+              "COP",
+            )}{" "}
+            • Renovaciones:{" "}
+            {formatearMontoMoneda(
+              resumenGeneral.COP.renovacionesHistoricas,
+              "COP",
+            )}{" "}
+            ({resumenGeneral.COP.cantidadRenovaciones} COP /{" "}
+            {resumenGeneral.USD.cantidadRenovaciones} USD)
+          </Text>
+          <Text style={styles.subLinea}>
+            Excedente de caja por renovación:{" "}
             {formatearMontoMoneda(
               resumenGeneral.COP.renovacionesHistoricas,
               "COP",
@@ -541,7 +596,6 @@ export default function ResumenGeneralScreen() {
               "USD",
             )}
           </Text>
-          <Text style={styles.subLinea}>Capital prestado acumulado</Text>
         </View>
 
         <View

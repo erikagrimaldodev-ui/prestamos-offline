@@ -19,7 +19,10 @@
       },
       "predictiveBackGestureEnabled": false,
       "package": "com.grimaldo36.prestamosoffline",
-      "permissions": ["USE_BIOMETRIC", "USE_FINGERPRINT"]
+      "permissions": [
+        "USE_BIOMETRIC",
+        "USE_FINGERPRINT"
+      ]
     },
     "web": {
       "output": "server",
@@ -36,7 +39,8 @@
         }
       ],
       "expo-sqlite",
-      "expo-local-authentication"
+      "expo-local-authentication",
+      "expo-image"
     ],
     "experiments": {
       "typedRoutes": true,

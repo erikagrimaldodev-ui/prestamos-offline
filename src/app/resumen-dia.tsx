@@ -22,6 +22,18 @@ type TipoModalCaja =
   | "gasto"
   | null;
 
+interface PrestamoCajaRow {
+  id: number;
+  cliente_id: number;
+  monto_prestado: number;
+  interes_porcentaje?: number | null;
+  monto_total?: number | null;
+  saldo_pendiente?: number | null;
+  fecha_creacion: string;
+  estado: string;
+  moneda?: string | null;
+}
+
 interface PagoCajaRow {
   id: number;
   monto_pagado?: number | null;
@@ -29,14 +41,6 @@ interface PagoCajaRow {
   fecha_pago?: string | null;
   fecha_registro_local?: string | null;
   fecha?: string | null;
-  moneda?: string | null;
-}
-
-interface PagoCajaRow {
-  id: number;
-  monto_pagado: number;
-  fecha_pago: string;
-  fecha_registro_local?: string | null;
   moneda?: string | null;
 }
 
@@ -197,8 +201,9 @@ export default function ResumenDiaCajaScreen() {
   const cargarDatosDia = useCallback(async () => {
     const [listaPrestamos, listaPagos, listaMovimientos] = await Promise.all([
       getAllRows<PrestamoCajaRow>(`
-        SELECT id, cliente_id, monto_prestado, fecha_creacion, estado, moneda
+        SELECT id, cliente_id, monto_prestado, interes_porcentaje, monto_total, saldo_pendiente, fecha_creacion, estado, moneda
         FROM prestamos
+        ORDER BY id ASC
       `),
       getAllRows<PagoCajaRow>(`
         SELECT pg.id, pg.monto_pagado, pg.fecha_pago, pg.fecha_registro_local, p.moneda
@@ -234,6 +239,7 @@ export default function ResumenDiaCajaScreen() {
   const resumenDia = useMemo(() => {
     const inicial = {
       efectivoRecibido: 0,
+      sumaPrestamosBaseDia: 0,
       sumaPrestamosDia: 0,
       dineroCobradoDia: 0,
       efectivoEntregado: 0,
@@ -266,14 +272,37 @@ export default function ResumenDiaCajaScreen() {
       }
     }
 
+    const ultimoRenovadoPorCliente = new Map<number, PrestamoCajaRow>();
     for (const p of prestamos) {
       const estadoLower = (p.estado || "").trim().toLowerCase();
-      if (estadoLower === "renovado") continue;
+      if (estadoLower === "renovado") {
+        ultimoRenovadoPorCliente.set(p.cliente_id, p);
+      }
+    }
+
+    for (const p of prestamos) {
       if (normalizarFecha(p.fecha_creacion) !== fechaHoy) continue;
+      const estadoLower = (p.estado || "").trim().toLowerCase();
+      if (estadoLower === "renovado") continue;
+
       const m = normalizarMoneda(p.moneda);
       const monto = Number(p.monto_prestado || 0);
-      if (!Number.isNaN(monto) && monto > 0) {
-        porMoneda[m].sumaPrestamosDia += monto;
+      if (Number.isNaN(monto) || monto <= 0) continue;
+
+      // Suma el capital de todos los préstamos activos/creados hoy
+      porMoneda[m].sumaPrestamosBaseDia += monto;
+
+      // Calcula excedente de caja si es renovación y el capital supera el saldo anterior
+      const prevRenovado = ultimoRenovadoPorCliente.get(p.cliente_id);
+      const esRenovadoHoy =
+        prevRenovado !== undefined &&
+        prevRenovado.id < p.id &&
+        normalizarFecha(prevRenovado.fecha_creacion) === fechaHoy;
+
+      if (esRenovadoHoy && prevRenovado) {
+        const saldoPrev = Number(prevRenovado.saldo_pendiente ?? 0);
+        const excedente = Math.max(0, monto - saldoPrev);
+        porMoneda[m].excedenteRenovacionDia += excedente;
       }
     }
 
@@ -291,10 +320,13 @@ export default function ResumenDiaCajaScreen() {
 
     for (const m of ["COP", "USD"] as const) {
       const d = porMoneda[m];
+      // Tarjeta Préstamos del Día: suma préstamos + renovaciones
+      d.sumaPrestamosDia = d.sumaPrestamosBaseDia + d.renovacionesDia;
+      // Caja/restante: descuenta préstamos base + renovaciones/excedentes sin duplicar
       d.restantePorEntregar =
         d.efectivoRecibido +
         d.dineroCobradoDia -
-        (d.sumaPrestamosDia +
+        (d.sumaPrestamosBaseDia +
           d.renovacionesDia +
           d.gastos +
           d.efectivoEntregado);
@@ -338,6 +370,9 @@ export default function ResumenDiaCajaScreen() {
 
     for (const mov of movimientos) {
       if (normalizarFecha(mov.fecha) !== fechaHoy) continue;
+      const montoNum = Number(mov.monto || 0);
+      if (Number.isNaN(montoNum) || montoNum <= 0) continue;
+
       const m = inferirMonedaMovimiento(mov);
       const esEntrada = mov.tipo === "efectivo_recibido";
       const esRenov = esTipoRenovacion(mov.tipo);
@@ -346,12 +381,12 @@ export default function ResumenDiaCajaScreen() {
         esResumenCierre: false,
         esRenovacion: esRenov,
         descripcion: esRenov
-          ? `[Renovación] ${mov.descripcion}`
+          ? `[Excedente renovación en efectivo] ${mov.descripcion}`
           : mov.descripcion,
         subtitulo: esRenov
-          ? `${normalizarFecha(mov.fecha)} • Sale de caja (no es gasto)`
+          ? `${normalizarFecha(mov.fecha)} • Sale de caja (excedente efectivo)`
           : `${normalizarFecha(mov.fecha)} • ${esEntrada ? "Entra a caja" : "Sale de caja"}`,
-        monto: Number(mov.monto || 0),
+        monto: montoNum,
         moneda: m,
         esEntrada,
         movimientoOriginal: mov,
@@ -579,9 +614,7 @@ export default function ResumenDiaCajaScreen() {
 
       <View style={[styles.tarjeta, styles.tarjetaAcentoRojo]}>
         <View style={styles.tarjetaHeader}>
-          <Text style={styles.tarjetaTitulo}>
-            Préstamos y Renovaciones (Día)
-          </Text>
+          <Text style={styles.tarjetaTitulo}>Préstamos del Día</Text>
           <Text style={styles.tarjetaBadgeNegativo}>Sale de caja</Text>
         </View>
         <Text style={styles.montoLinea}>
@@ -591,8 +624,15 @@ export default function ResumenDiaCajaScreen() {
           USD: {formatearMontoMoneda(resumenDia.USD.sumaPrestamosDia, "USD")}
         </Text>
         <Text style={styles.subLinea}>
-          Renovaciones ({resumenDia.COP.cantidadRenovacionesDia} COP /{" "}
-          {resumenDia.USD.cantidadRenovacionesDia} USD):{" "}
+          Préstamos:{" "}
+          {formatearMontoMoneda(resumenDia.COP.sumaPrestamosBaseDia, "COP")} •
+          Renovaciones:{" "}
+          {formatearMontoMoneda(resumenDia.COP.renovacionesDia, "COP")} (
+          {resumenDia.COP.cantidadRenovacionesDia} COP /{" "}
+          {resumenDia.USD.cantidadRenovacionesDia} USD)
+        </Text>
+        <Text style={styles.subLinea}>
+          Excedente de caja por renovación:{" "}
           {formatearMontoMoneda(resumenDia.COP.renovacionesDia, "COP")} •{" "}
           {formatearMontoMoneda(resumenDia.USD.renovacionesDia, "USD")}
         </Text>
